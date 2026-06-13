@@ -12,3 +12,11 @@ dependencies = [
 [[package]]
 name = "protocol"
 version = "0.1.0"
+
+[[package]]
+name = "skyctl"
+version = "0.1.0"
+dependencies = [
+ "net",
+ "protocol",
+]

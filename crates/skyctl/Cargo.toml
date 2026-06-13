@@ -1,0 +1,13 @@
+[package]
+name = "skyctl"
+version = "0.1.0"
+edition = "2021"
+description = "Live connectivity probe for the DRCX5: requests video, measures FPS, saves frames"
+
+[dependencies]
+net = { path = "../net" }
+protocol = { path = "../protocol" }
+
+[[bin]]
+name = "skyctl"
+path = "src/main.rs"
