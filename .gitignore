@@ -1,0 +1,14 @@
+# Derived artifacts — large/derived, not source
+*.apk
+*.xapk
+*.apkm
+/decompiled/
+/captures/*.pcap
+/captures/*.pcapng
+
+# Rust
+/target/
+**/target/
+
+# OS
+.DS_Store
