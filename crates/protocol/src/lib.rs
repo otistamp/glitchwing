@@ -61,6 +61,74 @@ pub fn idle_keepalive() -> [u8; 8] {
     [0xAA, CENTER, CENTER, 0x00, CENTER, 0x00, csum, 0x55]
 }
 
+// ---------------------------------------------------------------------------
+// Video: MJPEG-over-UDP frame reassembly (drone -> phone, port 8080).
+// Each datagram: [frameId][isFinal][chunkCount][0x00] "TZH" 0x01 + JPEG slice.
+// ---------------------------------------------------------------------------
+
+/// Vendor magic in bytes 4–7 of every video chunk header: `"TZH" 0x01`.
+pub const VIDEO_MAGIC: [u8; 4] = [0x54, 0x5A, 0x48, 0x01];
+
+/// Parsed video chunk header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VideoChunkHeader {
+    pub frame_id: u8,
+    /// True for the last chunk of the frame.
+    pub is_final: bool,
+    /// Total chunk count for the frame (meaningful only when `is_final`).
+    pub chunk_count: u8,
+}
+
+/// Parse a video datagram into its header and JPEG body slice.
+/// Returns `None` if too short or the magic doesn't match.
+pub fn parse_video_chunk(datagram: &[u8]) -> Option<(VideoChunkHeader, &[u8])> {
+    if datagram.len() < 8 || datagram[4..8] != VIDEO_MAGIC {
+        return None;
+    }
+    let header = VideoChunkHeader {
+        frame_id: datagram[0],
+        is_final: datagram[1] == 0x01,
+        chunk_count: datagram[2],
+    };
+    Some((header, &datagram[8..]))
+}
+
+/// Reassembles complete JPEG frames from in-order video datagrams.
+#[derive(Default)]
+pub struct FrameReassembler {
+    frame_id: Option<u8>,
+    buf: Vec<u8>,
+    received: u8,
+}
+
+impl FrameReassembler {
+    pub fn new() -> Self {
+        FrameReassembler::default()
+    }
+
+    /// Feed one UDP datagram. Returns the complete JPEG when a frame finishes;
+    /// `None` while a frame is still arriving, or if it was dropped (lost chunk,
+    /// new frame started early, or bad magic).
+    pub fn push(&mut self, datagram: &[u8]) -> Option<Vec<u8>> {
+        let (header, body) = parse_video_chunk(datagram)?;
+        if self.frame_id != Some(header.frame_id) {
+            self.frame_id = Some(header.frame_id);
+            self.buf.clear();
+            self.received = 0;
+        }
+        self.buf.extend_from_slice(body);
+        self.received += 1;
+        if header.is_final {
+            let complete = self.received == header.chunk_count;
+            let frame = std::mem::take(&mut self.buf);
+            self.frame_id = None;
+            self.received = 0;
+            return complete.then_some(frame);
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,5 +197,63 @@ mod tests {
     #[test]
     fn checksum_bumps_on_footer_collision() {
         assert_eq!(checksum(0x99, 0x00, 0x00, 0x00, 0x00), 0x9a);
+    }
+
+    // --- video reassembly ---
+
+    /// Build a video datagram with the real header layout.
+    fn chunk(frame_id: u8, is_final: bool, count: u8, body: &[u8]) -> Vec<u8> {
+        let b1 = if is_final { 0x01 } else { 0x00 };
+        let b2 = if is_final { count } else { 0x00 };
+        let mut v = vec![frame_id, b1, b2, 0x00, 0x54, 0x5A, 0x48, 0x01];
+        v.extend_from_slice(body);
+        v
+    }
+
+    #[test]
+    fn parse_chunk_rejects_short_and_bad_magic() {
+        assert!(parse_video_chunk(&[0x01, 0x00]).is_none());
+        assert!(parse_video_chunk(&[1, 0, 0, 0, b'X', b'Y', b'Z', 1, 0xff]).is_none());
+    }
+
+    #[test]
+    fn parse_chunk_reads_header_and_body() {
+        let d = chunk(3, true, 5, &[0xff, 0xd9]);
+        let (h, body) = parse_video_chunk(&d).expect("valid chunk");
+        assert_eq!(h, VideoChunkHeader { frame_id: 3, is_final: true, chunk_count: 5 });
+        assert_eq!(body, &[0xff, 0xd9]);
+    }
+
+    #[test]
+    fn assembles_two_chunk_frame_in_order() {
+        let mut r = FrameReassembler::new();
+        assert_eq!(r.push(&chunk(1, false, 0, &[0xff, 0xd8, 0xaa])), None);
+        let frame = r.push(&chunk(1, true, 2, &[0xbb, 0xff, 0xd9])).expect("frame complete");
+        assert_eq!(frame, vec![0xff, 0xd8, 0xaa, 0xbb, 0xff, 0xd9]);
+    }
+
+    #[test]
+    fn drops_frame_when_a_chunk_is_lost() {
+        // Final chunk says count=3 but only 2 datagrams arrived -> incomplete, drop.
+        let mut r = FrameReassembler::new();
+        assert_eq!(r.push(&chunk(7, false, 0, &[0xff, 0xd8])), None);
+        assert_eq!(r.push(&chunk(7, true, 3, &[0xff, 0xd9])), None);
+    }
+
+    #[test]
+    fn new_frame_id_resets_incomplete_previous() {
+        let mut r = FrameReassembler::new();
+        r.push(&chunk(1, false, 0, &[0xff, 0xd8, 0x11])); // frame 1 never finishes
+        // Frame 2 arrives complete in one (final) chunk.
+        let frame = r.push(&chunk(2, true, 1, &[0xff, 0xd8, 0x22, 0xff, 0xd9])).expect("frame 2");
+        assert_eq!(frame, vec![0xff, 0xd8, 0x22, 0xff, 0xd9]);
+    }
+
+    #[test]
+    fn ignores_datagram_with_bad_magic() {
+        let mut r = FrameReassembler::new();
+        let mut bad = chunk(1, true, 1, &[0xff, 0xd8, 0xff, 0xd9]);
+        bad[4] = b'X'; // corrupt magic
+        assert_eq!(r.push(&bad), None);
     }
 }
