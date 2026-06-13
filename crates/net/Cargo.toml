@@ -1,0 +1,8 @@
+[package]
+name = "net"
+version = "0.1.0"
+edition = "2021"
+description = "DRCX5 UDP link: fixed-rate control sender with failsafe + MJPEG video receiver"
+
+[dependencies]
+protocol = { path = "../protocol" }
