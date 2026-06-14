@@ -102,12 +102,23 @@ impl Canvas<'_> {
         }
     }
 
-    /// Glowing text: a dim halo in `color` around a bright near-white core.
+    /// High-contrast neon text: an outer colored glow, a solid black outline for
+    /// legibility on any background, then a bright core.
     pub fn glow_text(&mut self, x: usize, y: usize, text: &str, color: u32, scale: usize) {
-        for (ox, oy) in [(0i32, -1i32), (0, 1), (-1, 0), (1, 0)] {
-            self.text_raw((x as i32 + ox) as usize, (y as i32 + oy) as usize, text, color, scale, 150);
+        let at = |c: &mut Self, ox: i32, oy: i32, col: u32, a: u32| {
+            c.text_raw((x as i32 + ox * scale as i32).max(0) as usize,
+                       (y as i32 + oy * scale as i32).max(0) as usize, text, col, scale, a);
+        };
+        // outer colored bloom (radius 2)
+        for (ox, oy) in [(0, -2), (0, 2), (-2, 0), (2, 0)] {
+            at(self, ox, oy, color, 45);
         }
-        let core = blend(color, 0x00FF_FFFF, 110); // brighten toward white
+        // solid black outline (8-neighbour, radius 1) — this is what makes it readable
+        for (ox, oy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+            at(self, ox, oy, 0x0000_0000, 255);
+        }
+        // bright core
+        let core = blend(color, 0x00FF_FFFF, 70); // slightly brighten the neon
         self.text_raw(x, y, text, core, scale, 255);
     }
 
@@ -127,7 +138,7 @@ impl Canvas<'_> {
                     }
                 }
             }
-            cx += 7 * scale; // slightly tighter tracking
+            cx += 8 * scale; // leave room for the glyph outline
         }
     }
 
