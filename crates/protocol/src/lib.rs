@@ -51,6 +51,27 @@ pub fn axis_to_byte(v: f32) -> u8 {
     ((clamped + 1.0) * 0.5 * 255.0).round() as u8
 }
 
+/// Apply an expo curve to a normalized axis (`-1.0..=1.0`). `amount` (0.0..=1.0)
+/// blends between linear (0.0) and cubic (1.0): softer near center, full at the ends.
+pub fn expo(v: f32, amount: f32) -> f32 {
+    amount * v * v * v + (1.0 - amount) * v
+}
+
+/// Add a signed trim offset to an axis byte, saturating at 0..=255.
+pub fn apply_trim(value: u8, trim: i8) -> u8 {
+    (value as i32 + trim as i32).clamp(0, 255) as u8
+}
+
+/// Move `current` toward `target` by at most `max_step` (per call). Used to
+/// rate-limit throttle so taps aren't abrupt.
+pub fn ramp_toward(current: u8, target: u8, max_step: u8) -> u8 {
+    if target > current {
+        current.saturating_add(max_step).min(target)
+    } else {
+        current.saturating_sub(max_step).max(target)
+    }
+}
+
 /// Checksum: XOR of the five payload bytes (roll, pitch, throttle, yaw, flags),
 /// bumped by 1 if it collides with the header (`0x66`) or footer (`0x99`).
 pub fn checksum(roll: u8, pitch: u8, throttle: u8, yaw: u8, flags: u8) -> u8 {
@@ -193,6 +214,45 @@ mod tests {
     #[test]
     fn idle_keepalive_matches_reference() {
         assert_eq!(idle_keepalive(), [0xaa, 0x80, 0x80, 0x00, 0x80, 0x00, 0x80, 0x55]);
+    }
+
+    fn approx(a: f32, b: f32) {
+        assert!((a - b).abs() < 1e-4, "{a} != {b}");
+    }
+
+    #[test]
+    fn expo_preserves_endpoints_and_center() {
+        for amount in [0.0, 0.5, 1.0] {
+            approx(expo(0.0, amount), 0.0);
+            approx(expo(1.0, amount), 1.0);
+            approx(expo(-1.0, amount), -1.0);
+        }
+    }
+
+    #[test]
+    fn expo_full_is_cubic_and_zero_is_linear() {
+        approx(expo(0.5, 1.0), 0.125);
+        approx(expo(0.5, 0.0), 0.5);
+    }
+
+    #[test]
+    fn trim_offsets_and_saturates() {
+        assert_eq!(apply_trim(128, 10), 138);
+        assert_eq!(apply_trim(128, -10), 118);
+        assert_eq!(apply_trim(250, 10), 255);
+        assert_eq!(apply_trim(2, -10), 0);
+    }
+
+    #[test]
+    fn ramp_moves_by_at_most_max_step() {
+        assert_eq!(ramp_toward(128, 200, 16), 144);
+        assert_eq!(ramp_toward(200, 128, 16), 184);
+    }
+
+    #[test]
+    fn ramp_snaps_when_within_step() {
+        assert_eq!(ramp_toward(128, 130, 16), 130);
+        assert_eq!(ramp_toward(128, 128, 16), 128);
     }
 
     #[test]
