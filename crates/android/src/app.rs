@@ -40,8 +40,6 @@ struct Pad {
     land: bool,
     flip: bool,
     calibrate: bool,
-    last_key: u32,
-    raw: [f32; 8],
 }
 
 pub fn run(app: AndroidApp) {
@@ -166,10 +164,6 @@ pub fn run(app: AndroidApp) {
             fps_count = 0;
             fps_since = Instant::now();
         }
-        if frame % 60 == 0 {
-            log::info!("[axes] X{:+.2} Y{:+.2} Z{:+.2} Rz{:+.2}", pad.raw[0], pad.raw[1], pad.raw[2], pad.raw[3]);
-        }
-
         // --- render at native resolution ---
         if win_w > 0 && !fb.is_empty() {
             for px in fb.iter_mut() {
@@ -177,7 +171,7 @@ pub fn run(app: AndroidApp) {
             }
             scale_video(&mut fb, win_w, win_h, &vid);
             let connected = last_frame.map_or(false, |t| t.elapsed() < Duration::from_secs(2));
-            draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, flags, pad.last_key, frame);
+            draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame);
             if let Some(nw) = &window {
                 blit(nw, &fb, win_w, win_h);
             }
@@ -268,20 +262,10 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
         InputEvent::MotionEvent(m) => {
             if u32::from(m.source()) & SOURCE_CLASS_JOYSTICK != 0 && m.pointer_count() > 0 {
                 let p = m.pointer_at_index(0);
-                pad.raw = [
-                    p.axis_value(Axis::X),
-                    p.axis_value(Axis::Y),
-                    p.axis_value(Axis::Z),
-                    p.axis_value(Axis::Rz),
-                    p.axis_value(Axis::Rx),
-                    p.axis_value(Axis::Ry),
-                    p.axis_value(Axis::HatX),
-                    p.axis_value(Axis::HatY),
-                ];
-                pad.lx = pad.raw[0];
-                pad.ly = pad.raw[1];
-                pad.rx = pad.raw[2];
-                pad.ry = pad.raw[3];
+                pad.lx = p.axis_value(Axis::X);
+                pad.ly = p.axis_value(Axis::Y);
+                pad.rx = p.axis_value(Axis::Z);
+                pad.ry = p.axis_value(Axis::Rz);
                 return InputStatus::Handled;
             }
             InputStatus::Unhandled
@@ -289,9 +273,6 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
         InputEvent::KeyEvent(k) => {
             let down = matches!(k.action(), KeyAction::Down);
             let kc = k.key_code();
-            if down {
-                pad.last_key = u32::from(kc);
-            }
             match kc {
                 Keycode::ButtonStart => {
                     if down && k.repeat_count() == 0 {
@@ -323,8 +304,6 @@ fn draw_hud(
     yaw: u8,
     roll: u8,
     pitch: u8,
-    flags: u8,
-    last_key: u32,
     frame: u64,
 ) {
     let mut c = hud::Canvas { buf: fb, w, h };
@@ -335,13 +314,6 @@ fn draw_hud(
     let top = h / 12;
     let bot = h / 18;
     let (x0, y0, x1, y1) = (mx, top, w - mx, h - bot);
-    let fcol = if armed { hud::GREEN } else { hud::RED };
-
-    // inset neon border
-    c.hline(x0, y0, x1 - x0, fcol);
-    c.hline(x0, y1, x1 - x0, fcol);
-    c.vline(x0, y0, y1 - y0, fcol);
-    c.vline(x1, y0, y1 - y0, fcol);
 
     // top status panel
     let ph = g * 2 + 6 * s;
@@ -363,9 +335,6 @@ fn draw_hud(
     c.glow_text(x0 + 2 * s, y1 - g + s, "YAW/THR", hud::MAGENTA, s.max(2));
     c.stick_box(x1 - bs - 2 * s, y1 - bs - g, bs, roll, pitch, hud::CYAN);
     c.glow_text(x1 - 8 * g, y1 - g + s, "ROL/PIT", hud::CYAN, s.max(2));
-
-    // small debug line (temporary) above the stick boxes
-    c.glow_text(tx, y1 - bs - g - g, &format!("FLG{flags:02X} K{last_key}"), hud::GREEN, s.max(2));
 
     // Loud, blinking "LINK LOST" banner when no video is arriving — fly back!
     if !connected && (frame / 18).is_multiple_of(2) {
