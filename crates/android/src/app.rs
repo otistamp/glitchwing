@@ -62,6 +62,7 @@ pub fn run(app: AndroidApp) {
     let mut last_frame: Option<Instant> = None;
     let mut last_attempt: Option<Instant> = None;
     let mut wifi_requested = false; // one-shot WifiNetworkSpecifier request
+    let mut perm_requested = false; // one-shot NEARBY_WIFI_DEVICES request
     let mut pad = Pad::default();
     let mut armed = false;
     let mut prev_throttle = CENTER;
@@ -109,12 +110,18 @@ pub fn run(app: AndroidApp) {
         let ready = last_attempt.map_or(true, |t| t.elapsed() > Duration::from_secs(2));
         if !armed && stale && ready {
             last_attempt = Some(Instant::now());
-            // First time we're disconnected, ask the system to join the drone AP
-            // (one-time approval dialog). If already on the drone wifi manually,
-            // we're not stale, so this never fires.
-            if !wifi_requested {
-                wifi_requested = true;
-                request_drone_wifi();
+            // First time we're disconnected, ask the system to join the drone AP.
+            // Needs the NEARBY_WIFI_DEVICES runtime permission to scan/show the AP,
+            // so request that first and only fire the connect once it's granted.
+            // (If already on the drone wifi manually we're not stale, so neither fires.)
+            if nearby_wifi_granted() {
+                if !wifi_requested {
+                    wifi_requested = true;
+                    request_drone_wifi();
+                }
+            } else if !perm_requested {
+                perm_requested = true;
+                request_nearby_wifi_permission();
             }
             if bind_to_wifi() {
                 if let Some(old) = link.take() {
@@ -345,6 +352,39 @@ fn request_drone_wifi() -> bool {
             log::error!("request_drone_wifi error: {e:?}");
             false
         }
+    }
+}
+
+/// Is NEARBY_WIFI_DEVICES granted? (Needed for the WifiNetworkSpecifier scan.)
+fn nearby_wifi_granted() -> bool {
+    let ctx = ndk_context::android_context();
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else { return false };
+    let Ok(mut env) = vm.attach_current_thread() else { return false };
+    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+    let r = (|| -> jni::errors::Result<i32> {
+        let perm = env.new_string("android.permission.NEARBY_WIFI_DEVICES")?;
+        env.call_method(&activity, "checkSelfPermission", "(Ljava/lang/String;)I", &[(&perm).into()])?
+            .i()
+    })();
+    matches!(r, Ok(0)) // PackageManager.PERMISSION_GRANTED
+}
+
+/// Pop the runtime permission dialog for NEARBY_WIFI_DEVICES.
+fn request_nearby_wifi_permission() {
+    let ctx = ndk_context::android_context();
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else { return };
+    let Ok(mut env) = vm.attach_current_thread() else { return };
+    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+    let res = (|| -> jni::errors::Result<()> {
+        let perm = env.new_string("android.permission.NEARBY_WIFI_DEVICES")?;
+        let arr = env.new_object_array(1, "java/lang/String", &JObject::null())?;
+        env.set_object_array_element(&arr, 0, &perm)?;
+        env.call_method(&activity, "requestPermissions", "([Ljava/lang/String;I)V", &[(&arr).into(), JValue::Int(1)])?;
+        Ok(())
+    })();
+    match res {
+        Ok(_) => log::info!("requested NEARBY_WIFI_DEVICES"),
+        Err(e) => log::error!("request_nearby_wifi_permission error: {e:?}"),
     }
 }
 

@@ -40,3 +40,7 @@ name = "android.permission.ACCESS_NETWORK_STATE"
 # requestNetwork(WifiNetworkSpecifier) — auto-join the drone AP
 [[package.metadata.android.uses_permission]]
 name = "android.permission.CHANGE_NETWORK_STATE"
+
+# Scan for the drone AP in the WifiNetworkSpecifier picker (Android 13+ runtime perm)
+[[package.metadata.android.uses_permission]]
+name = "android.permission.NEARBY_WIFI_DEVICES"
