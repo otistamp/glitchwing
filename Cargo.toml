@@ -5,4 +5,5 @@ members = [
     "crates/net",
     "crates/skyctl",
     "crates/viewer",
+    "crates/android",
 ]
