@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use android_activity::input::{Axis, InputEvent, KeyAction, Keycode};
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
+use jni::objects::{JObject, JObjectArray, JValue};
 use ndk::{hardware_buffer_format::HardwareBufferFormat, native_window::NativeWindow};
 use net::{DroneLink, LinkConfig};
 use protocol::{
@@ -19,23 +20,22 @@ const MAX_DEFLECTION: f32 = 0.7;
 const EXPO: f32 = 0.4;
 const THROTTLE_RAMP: u8 = 6;
 const DEADZONE: f32 = 0.12;
-/// Android joystick "class" bit in a MotionEvent source (SOURCE_CLASS_JOYSTICK).
 const SOURCE_CLASS_JOYSTICK: u32 = 0x0000_0010;
+const TRANSPORT_WIFI: i32 = 1;
 
-/// Latest gamepad state, accumulated from input events.
 #[derive(Default)]
 struct Pad {
     lx: f32,
     ly: f32,
     rx: f32,
     ry: f32,
-    arm_toggle: bool, // one-shot edge (Start pressed)
+    arm_toggle: bool,
     emergency: bool,
     takeoff: bool,
     land: bool,
     flip: bool,
     calibrate: bool,
-    last_key: u32, // last gamepad keycode seen (debug)
+    last_key: u32,
 }
 
 pub fn run(app: AndroidApp) {
@@ -44,18 +44,12 @@ pub fn run(app: AndroidApp) {
             .with_max_level(log::LevelFilter::Info)
             .with_tag("skyraptor"),
     );
-    log::info!("android_main (spike 4: gamepad control)");
-
-    let link = match DroneLink::start(LinkConfig::default()) {
-        Ok(l) => l,
-        Err(e) => {
-            log::error!("DroneLink failed: {e}");
-            return;
-        }
-    };
+    log::info!("android_main (gamepad control + wifi bind)");
 
     let mut quit = false;
     let mut window: Option<NativeWindow> = None;
+    let mut link: Option<DroneLink> = None;
+    let mut net_bound = false;
     let mut fb = vec![0u32; VIDEO_W * VIDEO_H];
     let mut pad = Pad::default();
     let mut armed = false;
@@ -63,6 +57,7 @@ pub fn run(app: AndroidApp) {
     let mut connected = false;
     let (mut fps_count, mut shown_fps) = (0u32, 0u32);
     let mut fps_since = Instant::now();
+    let mut frame: u64 = 0;
 
     while !quit {
         let mut got_window = false;
@@ -86,69 +81,74 @@ pub fn run(app: AndroidApp) {
         if lost_window {
             window = None;
         }
+        frame += 1;
 
-        // Drain input events into `pad`.
+        // Bind the process to the WiFi network (so UDP reaches the no-internet drone
+        // even with cellular up), then start the link. Retry until the WiFi net appears.
+        if !net_bound && frame % 30 == 1 && bind_to_wifi() {
+            net_bound = true;
+            match DroneLink::start(LinkConfig::default()) {
+                Ok(l) => {
+                    log::info!("DroneLink started (bound to wifi)");
+                    link = Some(l);
+                }
+                Err(e) => log::error!("DroneLink failed: {e}"),
+            }
+        }
+
+        // Drain gamepad input into `pad`.
         if let Ok(mut iter) = app.input_events_iter() {
             while iter.next(|e| handle_input(e, &mut pad)) {}
         }
 
-        // Arming edge. Reset throttle to center on arm so we never arm into a climb.
-        if pad.arm_toggle {
-            armed = !armed;
-            if armed {
-                link.control.arm();
-                prev_throttle = CENTER;
-            } else {
-                link.control.disarm();
-            }
-            pad.arm_toggle = false;
-        }
-
-        // Axes → bytes (Android stick Y is inverted: up = -1, so negate for climb/forward).
+        // Shape axes (Android stick-up = -1, so negate for climb/forward).
         let dz = |v: f32| if v.abs() > DEADZONE { v } else { 0.0 };
         let shape = |raw: f32| axis_to_byte(expo(raw, EXPO) * MAX_DEFLECTION);
         let roll = shape(dz(pad.rx));
         let pitch = shape(dz(-pad.ry));
         let yaw = shape(dz(pad.lx));
-        // Always compute throttle from the stick (so the HUD reflects it even when
-        // disarmed); the net layer only transmits active commands while armed.
         prev_throttle = ramp_toward(prev_throttle, shape(dz(-pad.ly)), THROTTLE_RAMP);
         let throttle = prev_throttle;
-
         let mut flags = 0u8;
-        if pad.takeoff {
-            flags |= FLAG_TAKEOFF;
-        }
-        if pad.land {
-            flags |= FLAG_LAND;
-        }
-        if pad.flip {
-            flags |= FLAG_FLIP;
-        }
-        if pad.calibrate {
-            flags |= FLAG_CALIBRATE;
-        }
+        if pad.takeoff { flags |= FLAG_TAKEOFF; }
+        if pad.land { flags |= FLAG_LAND; }
+        if pad.flip { flags |= FLAG_FLIP; }
+        if pad.calibrate { flags |= FLAG_CALIBRATE; }
         if pad.emergency {
             flags |= FLAG_EMERGENCY;
-            link.control.arm(); // force-transmit the cut
             armed = false;
         }
-        link.control.set(ControlState { roll, pitch, throttle, yaw, flags });
-        if !armed && !pad.emergency {
-            link.control.disarm();
-        }
 
-        // Freshest video frame.
-        let mut latest = None;
-        while let Ok(f) = link.frames.try_recv() {
-            latest = Some(f);
-        }
-        if let Some(jpeg) = latest {
-            if decode_into(&jpeg, &mut fb) {
-                connected = true;
-                fps_count += 1;
+        if let Some(l) = &link {
+            if pad.arm_toggle {
+                armed = !armed;
+                if armed {
+                    l.control.arm();
+                    prev_throttle = CENTER;
+                } else {
+                    l.control.disarm();
+                }
+            }
+            if pad.emergency {
+                l.control.arm(); // force-transmit the cut
+            }
+            l.control.set(ControlState { roll, pitch, throttle, yaw, flags });
+            if !armed && !pad.emergency {
+                l.control.disarm();
+            }
+            let mut latest = None;
+            while let Ok(f) = l.frames.try_recv() {
+                latest = Some(f);
+            }
+            if let Some(jpeg) = latest {
+                if decode_into(&jpeg, &mut fb) {
+                    connected = true;
+                    fps_count += 1;
+                }
             }
         }
+        pad.arm_toggle = false;
+
         if fps_since.elapsed() >= Duration::from_secs(1) {
             shown_fps = fps_count;
             fps_count = 0;
@@ -165,8 +165,81 @@ pub fn run(app: AndroidApp) {
             blit(nw, &fb);
         }
     }
-    link.stop();
+    if let Some(l) = link {
+        l.stop();
+    }
     log::info!("android_main exiting");
+}
+
+/// Bind this process to the WiFi network so app traffic reaches the drone's
+/// no-internet AP even when cellular is the default network. Returns true on success.
+fn bind_to_wifi() -> bool {
+    let ctx = ndk_context::android_context();
+    let vm = match unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) } {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let mut env = match vm.attach_current_thread() {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+
+    let mut try_bind = || -> jni::errors::Result<bool> {
+        let name = env.new_string("connectivity")?;
+        let cm = env
+            .call_method(
+                &activity,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[(&name).into()],
+            )?
+            .l()?;
+        let networks: JObjectArray = env
+            .call_method(&cm, "getAllNetworks", "()[Landroid/net/Network;", &[])?
+            .l()?
+            .into();
+        let len = env.get_array_length(&networks)?;
+        for i in 0..len {
+            let net = env.get_object_array_element(&networks, i)?;
+            let caps = env
+                .call_method(
+                    &cm,
+                    "getNetworkCapabilities",
+                    "(Landroid/net/Network;)Landroid/net/NetworkCapabilities;",
+                    &[(&net).into()],
+                )?
+                .l()?;
+            if caps.is_null() {
+                continue;
+            }
+            let is_wifi = env
+                .call_method(&caps, "hasTransport", "(I)Z", &[JValue::Int(TRANSPORT_WIFI)])?
+                .z()?;
+            if is_wifi {
+                let ok = env
+                    .call_method(
+                        &cm,
+                        "bindProcessToNetwork",
+                        "(Landroid/net/Network;)Z",
+                        &[(&net).into()],
+                    )?
+                    .z()?;
+                return Ok(ok);
+            }
+        }
+        Ok(false)
+    };
+    match try_bind() {
+        Ok(b) => {
+            log::info!("bind_to_wifi -> {b}");
+            b
+        }
+        Err(e) => {
+            log::error!("bind_to_wifi error: {e:?}");
+            false
+        }
+    }
 }
 
 fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
@@ -187,7 +260,7 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
             let kc = k.key_code();
             if down {
                 pad.last_key = u32::from(kc);
-                log::info!("[btn] {kc:?} = {}", u32::from(kc)); // for documenting the controller
+                log::info!("[btn] {kc:?} = {}", u32::from(kc));
             }
             match kc {
                 Keycode::ButtonStart => {
@@ -202,8 +275,7 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
                 Keycode::ButtonX => pad.calibrate = down,
                 _ => {}
             }
-            // Consume ALL key events so a controller button mapped to BACK can't
-            // finish the activity (the default fallback for unhandled BACK).
+            // Consume all key events so a BACK-mapped button can't finish the activity.
             InputStatus::Handled
         }
         _ => InputStatus::Unhandled,
@@ -234,7 +306,7 @@ fn draw_hud(
     c.glow_text(5, 15, "THR", hud::CYAN, 1);
     c.bar(34, 15, VIDEO_W - 44, 7, throttle as f32 / 255.0, if armed { hud::GREEN } else { hud::AMBER });
     c.glow_text(5, 26, &format!("FLG{flags:02X}"), hud::MAGENTA, 1);
-    c.glow_text(5, 37, dbg, hud::GREEN, 1); // raw gamepad debug
+    c.glow_text(5, 37, dbg, hud::GREEN, 1);
 
     let bs = 46;
     c.stick_box(8, VIDEO_H - bs - 12, bs, yaw, throttle, hud::MAGENTA);
