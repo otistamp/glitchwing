@@ -37,16 +37,24 @@ Android app flew the drone with live video + gamepad control. Confirmed:
 - Gamepad: left stick X/Y = yaw/throttle, right Z/Rz = roll/pitch; Start=arm,
   B=takeoff, A=land, X=calibrate, Y=flip, Select/Mode=EMERGENCY.
 - WiFi-bind (works with cellular on), self-healing watchdog (re-binds when
-  disarmed), keep-screen-on, LINK-LOST warning.
+  disarmed), keep-screen-on, LINK-LOST warning, crisp native-res HUD.
+- **Auto-connect** to the drone AP via `WifiNetworkSpecifier` (SSID prefix
+  `WIFI_8K__`) when disconnected — one-time system Connect dialog.
 - **Maiden flight ended by WiFi range (RSSI -84) — a hardware limit. Fly close.**
+
+### One-time setup on a fresh install
+- Grant **NEARBY_WIFI_DEVICES** (Settings → Apps → Skyraptor → Permissions →
+  Nearby devices, or `adb shell pm grant app.skyraptor.drcx5
+  android.permission.NEARBY_WIFI_DEVICES`) — needed for the auto-connect WiFi
+  scan. Can't be requested in-app (pure-Rust NativeActivity has no Activity
+  handle / UI thread for the runtime-permission dialog).
 
 ## Next
 
 - More close-range flights to build confidence + tune EXPO/MAX_DEFLECTION.
-- Remove temporary diagnostics in `crates/android/src/app.rs` (`[axes]` log,
-  `Pad.raw`, the `K{last_key}` HUD debug).
 - Optional: wire spare buttons / 8-way D-pad (headless, trim).
-- Quality-of-life: signal-strength indicator; in-app re-arm-on-reconnect.
+- Quality-of-life: signal-strength indicator; skip the connect dialog if already
+  on the drone wifi; let the user re-trigger auto-connect from a HUD button.
 
 Build/deploy: `scripts/build-android.sh build` then
 `adb install -r target/debug/apk/skyraptor-android.apk`. Logs: `adb logcat -s skyraptor:I`.
