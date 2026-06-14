@@ -36,6 +36,7 @@ struct Pad {
     flip: bool,
     calibrate: bool,
     last_key: u32,
+    raw: [f32; 8], // X, Y, Z, Rz, Rx, Ry, HatX, HatY (diagnostic)
 }
 
 pub fn run(app: AndroidApp) {
@@ -154,6 +155,13 @@ pub fn run(app: AndroidApp) {
             fps_count = 0;
             fps_since = Instant::now();
         }
+        if frame % 20 == 0 {
+            let r = pad.raw;
+            log::info!(
+                "[axes] X{:+.2} Y{:+.2} Z{:+.2} Rz{:+.2} Rx{:+.2} Ry{:+.2} Hx{:+.2} Hy{:+.2}",
+                r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]
+            );
+        }
 
         let dbg = format!(
             "LX{:+.2} LY{:+.2} RX{:+.2} RY{:+.2} K{}",
@@ -247,10 +255,20 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
         InputEvent::MotionEvent(m) => {
             if u32::from(m.source()) & SOURCE_CLASS_JOYSTICK != 0 && m.pointer_count() > 0 {
                 let p = m.pointer_at_index(0);
-                pad.lx = p.axis_value(Axis::X);
-                pad.ly = p.axis_value(Axis::Y);
-                pad.rx = p.axis_value(Axis::Z);
-                pad.ry = p.axis_value(Axis::Rz);
+                pad.raw = [
+                    p.axis_value(Axis::X),
+                    p.axis_value(Axis::Y),
+                    p.axis_value(Axis::Z),
+                    p.axis_value(Axis::Rz),
+                    p.axis_value(Axis::Rx),
+                    p.axis_value(Axis::Ry),
+                    p.axis_value(Axis::HatX),
+                    p.axis_value(Axis::HatY),
+                ];
+                pad.lx = pad.raw[0];
+                pad.ly = pad.raw[1];
+                pad.rx = pad.raw[2];
+                pad.ry = pad.raw[3];
                 return InputStatus::Handled;
             }
             InputStatus::Unhandled
@@ -269,8 +287,8 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
                     }
                 }
                 Keycode::ButtonSelect | Keycode::ButtonMode => pad.emergency = down,
-                Keycode::ButtonA => pad.takeoff = down,
-                Keycode::ButtonB => pad.land = down,
+                Keycode::ButtonA => pad.land = down,
+                Keycode::ButtonB => pad.takeoff = down,
                 Keycode::ButtonY => pad.flip = down,
                 Keycode::ButtonX => pad.calibrate = down,
                 _ => {}
