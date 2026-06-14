@@ -19,17 +19,21 @@ Pure-Rust control + video for the Vivitar Sky Raptor **DRCX5** toy drone
     on-screen HUD, trim, expo/rate-limited control feel, and snapshot/recording
   - 33 tests total, clippy clean.
 
-- **Phase 2 — Android app** 🚧 (live video working on-device)
+- **Phase 2 — Android app** ✅ (video + gamepad control working on-device)
   - `crates/hud` — shared cyberpunk HUD renderer (desktop + android)
   - `crates/android` — pure-Rust `android-activity` app; software-blits MJPEG to
-    the NativeWindow, reuses `protocol`/`net`/`hud`. **Live video confirmed on a
-    real phone at ~21 fps.** Toolchain: `cargo-apk` + NDK r27, 16 KB-aligned.
-  - Build: `scripts/build-android.sh [build|run]`
-  - Remaining: flight control input (gamepad/touch) on Android.
+    the NativeWindow, reuses `protocol`/`net`/`hud`. Live video (~21 fps) +
+    gamepad flight control + same failsafe/HUD as desktop.
+  - **WiFi bind:** JNI `ConnectivityManager.bindProcessToNetwork` so video works
+    with cellular on (Android otherwise routes app traffic to cellular).
+  - Gamepad map documented in `docs/CONTROLLER.md`; key events consumed so a
+    BACK-mapped button can't close the app.
+  - Toolchain: `cargo-apk` + NDK r27, 16 KB-aligned. Build: `scripts/build-android.sh`.
 
 ## Next
 
-- Android: flight control input (gamepad and/or on-screen touch).
+- Bench-verify gamepad control on the phone (arm + sticks → motors, props off).
+- Optional: wire spare buttons / 8-way D-pad (headless, trim, etc.).
 - Real tethered flight test (beyond props-off bench check).
 
 ## Tooling notes
