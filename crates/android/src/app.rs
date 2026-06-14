@@ -27,6 +27,8 @@ const THROTTLE_RAMP: u8 = 6;
 const DEADZONE: f32 = 0.12;
 const SOURCE_CLASS_JOYSTICK: u32 = 0x0000_0010;
 const TRANSPORT_WIFI: i32 = 1;
+/// Drone AP SSID prefix (observed: "WIFI_8K__<mac>"), matched as a prefix pattern.
+const SSID_PREFIX: &str = "WIFI_8K__";
 
 #[derive(Default)]
 struct Pad {
@@ -59,6 +61,7 @@ pub fn run(app: AndroidApp) {
     let mut link: Option<DroneLink> = None;
     let mut last_frame: Option<Instant> = None;
     let mut last_attempt: Option<Instant> = None;
+    let mut wifi_requested = false; // one-shot WifiNetworkSpecifier request
     let mut pad = Pad::default();
     let mut armed = false;
     let mut prev_throttle = CENTER;
@@ -106,6 +109,13 @@ pub fn run(app: AndroidApp) {
         let ready = last_attempt.map_or(true, |t| t.elapsed() > Duration::from_secs(2));
         if !armed && stale && ready {
             last_attempt = Some(Instant::now());
+            // First time we're disconnected, ask the system to join the drone AP
+            // (one-time approval dialog). If already on the drone wifi manually,
+            // we're not stale, so this never fires.
+            if !wifi_requested {
+                wifi_requested = true;
+                request_drone_wifi();
+            }
             if bind_to_wifi() {
                 if let Some(old) = link.take() {
                     old.stop();
@@ -252,6 +262,87 @@ fn bind_to_wifi() -> bool {
         }
         Err(e) => {
             log::error!("bind_to_wifi error: {e:?}");
+            false
+        }
+    }
+}
+
+/// Ask Android to connect to the drone's WiFi AP (SSID prefix `WIFI_8K__`) via
+/// `ConnectivityManager.requestNetwork(WifiNetworkSpecifier, PendingIntent)`. Shows
+/// a one-time system approval dialog; the request persists so the OS keeps the
+/// drone connected while the app runs. Pure JNI (PendingIntent overload avoids the
+/// NetworkCallback subclass that can't be made from Rust).
+fn request_drone_wifi() -> bool {
+    const PATTERN_PREFIX: i32 = 1; // android.os.PatternMatcher.PATTERN_PREFIX
+    const FLAG_IMMUTABLE: i32 = 0x0400_0000;
+    const FLAG_UPDATE_CURRENT: i32 = 0x0800_0000;
+
+    let ctx = ndk_context::android_context();
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else { return false };
+    let Ok(mut env) = vm.attach_current_thread() else { return false };
+    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+
+    let mut go = || -> jni::errors::Result<()> {
+        let name = env.new_string("connectivity")?;
+        let cm = env
+            .call_method(&activity, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[(&name).into()])?
+            .l()?;
+
+        // PatternMatcher(SSID_PREFIX, PATTERN_PREFIX)
+        let prefix = env.new_string(SSID_PREFIX)?;
+        let pm = env.new_object(
+            "android/os/PatternMatcher",
+            "(Ljava/lang/String;I)V",
+            &[(&prefix).into(), JValue::Int(PATTERN_PREFIX)],
+        )?;
+
+        // WifiNetworkSpecifier.Builder().setSsidPattern(pm).build()
+        let b = env.new_object("android/net/wifi/WifiNetworkSpecifier$Builder", "()V", &[])?;
+        let b = env
+            .call_method(&b, "setSsidPattern", "(Landroid/os/PatternMatcher;)Landroid/net/wifi/WifiNetworkSpecifier$Builder;", &[(&pm).into()])?
+            .l()?;
+        let specifier = env
+            .call_method(&b, "build", "()Landroid/net/wifi/WifiNetworkSpecifier;", &[])?
+            .l()?;
+
+        // NetworkRequest.Builder().addTransportType(WIFI).setNetworkSpecifier(spec).build()
+        let rb = env.new_object("android/net/NetworkRequest$Builder", "()V", &[])?;
+        let rb = env
+            .call_method(&rb, "addTransportType", "(I)Landroid/net/NetworkRequest$Builder;", &[JValue::Int(TRANSPORT_WIFI)])?
+            .l()?;
+        let rb = env
+            .call_method(&rb, "setNetworkSpecifier", "(Landroid/net/NetworkSpecifier;)Landroid/net/NetworkRequest$Builder;", &[(&specifier).into()])?
+            .l()?;
+        let request = env.call_method(&rb, "build", "()Landroid/net/NetworkRequest;", &[])?.l()?;
+
+        // PendingIntent.getBroadcast(activity, 0, new Intent(action), IMMUTABLE|UPDATE_CURRENT)
+        let action = env.new_string("app.skyraptor.drcx5.WIFI")?;
+        let intent = env.new_object("android/content/Intent", "(Ljava/lang/String;)V", &[(&action).into()])?;
+        let pending = env
+            .call_static_method(
+                "android/app/PendingIntent",
+                "getBroadcast",
+                "(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;",
+                &[(&activity).into(), JValue::Int(0), (&intent).into(), JValue::Int(FLAG_IMMUTABLE | FLAG_UPDATE_CURRENT)],
+            )?
+            .l()?;
+
+        // cm.requestNetwork(request, pending)
+        env.call_method(
+            &cm,
+            "requestNetwork",
+            "(Landroid/net/NetworkRequest;Landroid/app/PendingIntent;)V",
+            &[(&request).into(), (&pending).into()],
+        )?;
+        Ok(())
+    };
+    match go() {
+        Ok(_) => {
+            log::info!("requestNetwork({SSID_PREFIX}*) issued");
+            true
+        }
+        Err(e) => {
+            log::error!("request_drone_wifi error: {e:?}");
             false
         }
     }
