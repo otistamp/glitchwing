@@ -35,6 +35,7 @@ struct Pad {
     land: bool,
     flip: bool,
     calibrate: bool,
+    last_key: u32, // last gamepad keycode seen (debug)
 }
 
 pub fn run(app: AndroidApp) {
@@ -88,10 +89,7 @@ pub fn run(app: AndroidApp) {
 
         // Drain input events into `pad`.
         if let Ok(mut iter) = app.input_events_iter() {
-            while iter.next(|e| {
-                handle_input(e, &mut pad);
-                InputStatus::Unhandled
-            }) {}
+            while iter.next(|e| handle_input(e, &mut pad)) {}
         }
 
         // Arming edge.
@@ -159,7 +157,11 @@ pub fn run(app: AndroidApp) {
             fps_since = Instant::now();
         }
 
-        draw_hud(&mut fb, armed, connected, shown_fps, throttle, yaw, roll, pitch, flags);
+        let dbg = format!(
+            "LX{:+.2} LY{:+.2} RX{:+.2} RY{:+.2} K{}",
+            pad.lx, pad.ly, pad.rx, pad.ry, pad.last_key
+        );
+        draw_hud(&mut fb, armed, connected, shown_fps, throttle, yaw, roll, pitch, flags, &dbg);
 
         if let Some(nw) = &window {
             blit(nw, &fb);
@@ -169,7 +171,7 @@ pub fn run(app: AndroidApp) {
     log::info!("android_main exiting");
 }
 
-fn handle_input(event: &InputEvent, pad: &mut Pad) {
+fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
     match event {
         InputEvent::MotionEvent(m) => {
             if u32::from(m.source()) & SOURCE_CLASS_JOYSTICK != 0 && m.pointer_count() > 0 {
@@ -178,10 +180,15 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) {
                 pad.ly = p.axis_value(Axis::Y);
                 pad.rx = p.axis_value(Axis::Z);
                 pad.ry = p.axis_value(Axis::Rz);
+                return InputStatus::Handled;
             }
+            InputStatus::Unhandled
         }
         InputEvent::KeyEvent(k) => {
             let down = matches!(k.action(), KeyAction::Down);
+            if down {
+                pad.last_key = u32::from(k.key_code());
+            }
             match k.key_code() {
                 Keycode::ButtonStart => {
                     if down && k.repeat_count() == 0 {
@@ -195,8 +202,11 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) {
                 Keycode::ButtonX => pad.calibrate = down,
                 _ => {}
             }
+            // Consume ALL key events so a controller button mapped to BACK can't
+            // finish the activity (the default fallback for unhandled BACK).
+            InputStatus::Handled
         }
-        _ => {}
+        _ => InputStatus::Unhandled,
     }
 }
 
@@ -211,10 +221,11 @@ fn draw_hud(
     roll: u8,
     pitch: u8,
     flags: u8,
+    dbg: &str,
 ) {
     let mut c = hud::Canvas { buf: fb, w: VIDEO_W, h: VIDEO_H };
     c.neon_frame(if armed { hud::GREEN } else { hud::RED });
-    c.panel(2, 2, VIDEO_W - 4, 33, 150);
+    c.panel(2, 2, VIDEO_W - 4, 44, 150);
     let (txt, col) = if armed { ("[ARMED]", hud::GREEN) } else { ("[STANDBY]", hud::AMBER) };
     c.glow_text(5, 4, txt, col, 1);
     let link = if connected { "LINK" } else { "NO SIG" };
@@ -223,6 +234,7 @@ fn draw_hud(
     c.glow_text(5, 15, "THR", hud::CYAN, 1);
     c.bar(34, 15, VIDEO_W - 44, 7, throttle as f32 / 255.0, if armed { hud::GREEN } else { hud::AMBER });
     c.glow_text(5, 26, &format!("FLG{flags:02X}"), hud::MAGENTA, 1);
+    c.glow_text(5, 37, dbg, hud::GREEN, 1); // raw gamepad debug
 
     let bs = 46;
     c.stick_box(8, VIDEO_H - bs - 12, bs, yaw, throttle, hud::MAGENTA);
