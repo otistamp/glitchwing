@@ -611,6 +611,7 @@ dependencies = [
  "log",
  "ndk-sys",
  "num_enum",
+ "raw-window-handle",
  "thiserror 1.0.69",
 ]
 
@@ -986,6 +987,7 @@ dependencies = [
  "android-activity",
  "android_logger",
  "log",
+ "ndk",
 ]
 
 [[package]]

@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 # (the lib compiles to an empty cdylib off-Android).
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"] }
+ndk = "0.9"
 log = "0.4"
 android_logger = "0.14"
 
