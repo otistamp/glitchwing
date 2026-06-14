@@ -225,15 +225,14 @@ fn main() {
             c.neon_frame(if armed { hud::GREEN } else { hud::RED });
 
             // top status panel
-            c.panel(4, 4, W - 8, 46, 150);
-            c.glow_text(8, 6, "SKYRAPTOR //DRCX5", hud::CYAN, 1);
+            c.panel(4, 4, W - 8, 35, 150);
             let (txt, col) = if armed { ("[ARMED]", hud::GREEN) } else { ("[STANDBY]", hud::AMBER) };
-            c.glow_text(8, 17, txt, col, 1);
-            c.glow_text(96, 17, &format!("FPS{shown_fps:02}"), hud::CYAN, 1);
-            c.glow_text(160, 17, &format!("FLG{flags:02X}"), hud::MAGENTA, 1);
-            c.glow_text(8, 28, "THR", hud::CYAN, 1);
-            c.bar(34, 28, W - 44, 7, throttle as f32 / 255.0, if armed { hud::GREEN } else { hud::AMBER });
-            c.glow_text(8, 40, &format!("TRIM R{:+03} P{:+03} Y{:+03}", trim.roll, trim.pitch, trim.yaw), hud::CYAN, 1);
+            c.glow_text(8, 6, txt, col, 1);
+            c.glow_text(96, 6, &format!("FPS{shown_fps:02}"), hud::CYAN, 1);
+            c.glow_text(160, 6, &format!("FLG{flags:02X}"), hud::MAGENTA, 1);
+            c.glow_text(8, 17, "THR", hud::CYAN, 1);
+            c.bar(34, 17, W - 44, 7, throttle as f32 / 255.0, if armed { hud::GREEN } else { hud::AMBER });
+            c.glow_text(8, 29, &format!("TRIM R{:+03} P{:+03} Y{:+03}", trim.roll, trim.pitch, trim.yaw), hud::CYAN, 1);
 
             // stick boxes (FPV-OSD style) in the bottom corners
             let bs = 46;
