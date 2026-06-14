@@ -15,8 +15,9 @@ Pure-Rust control + video for the Vivitar Sky Raptor **DRCX5** toy drone
   - `crates/protocol` — control encoding + checksum + MJPEG reassembly + axis mapping (22 tests)
   - `crates/net` — ~25 Hz control sender with self-neutralizing failsafe + video receiver (6 tests)
   - `crates/skyctl` — live connectivity probe (video/FPS, disarmed)
-  - `crates/viewer` — live MJPEG window + keyboard/gamepad flight control
-  - 28 tests total, clippy clean.
+  - `crates/viewer` — live MJPEG window + keyboard/gamepad flight control, with
+    on-screen HUD, trim, expo/rate-limited control feel, and snapshot/recording
+  - 33 tests total, clippy clean.
 
 ## Next
 
