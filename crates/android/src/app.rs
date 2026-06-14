@@ -111,9 +111,11 @@ pub fn run(app: AndroidApp) {
         if !armed && stale && ready {
             last_attempt = Some(Instant::now());
             // First time we're disconnected, ask the system to join the drone AP.
-            // Needs the NEARBY_WIFI_DEVICES runtime permission to scan/show the AP,
-            // so request that first and only fire the connect once it's granted.
-            // (If already on the drone wifi manually we're not stale, so neither fires.)
+            // The WifiNetworkSpecifier scan needs NEARBY_WIFI_DEVICES; we can't
+            // request it in-app (ndk_context gives the Application, not the Activity,
+            // and runtime-permission UI needs the Activity/UI thread), so it must be
+            // granted once in Settings. (If already on the drone wifi manually we're
+            // not stale, so this never fires.)
             if nearby_wifi_granted() {
                 if !wifi_requested {
                     wifi_requested = true;
@@ -121,7 +123,7 @@ pub fn run(app: AndroidApp) {
                 }
             } else if !perm_requested {
                 perm_requested = true;
-                request_nearby_wifi_permission();
+                log::warn!("NEARBY_WIFI_DEVICES not granted — enable it in Settings to auto-join the drone wifi");
             }
             if bind_to_wifi() {
                 if let Some(old) = link.take() {
@@ -367,25 +369,6 @@ fn nearby_wifi_granted() -> bool {
             .i()
     })();
     matches!(r, Ok(0)) // PackageManager.PERMISSION_GRANTED
-}
-
-/// Pop the runtime permission dialog for NEARBY_WIFI_DEVICES.
-fn request_nearby_wifi_permission() {
-    let ctx = ndk_context::android_context();
-    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else { return };
-    let Ok(mut env) = vm.attach_current_thread() else { return };
-    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
-    let res = (|| -> jni::errors::Result<()> {
-        let perm = env.new_string("android.permission.NEARBY_WIFI_DEVICES")?;
-        let arr = env.new_object_array(1, "java/lang/String", &JObject::null())?;
-        env.set_object_array_element(&arr, 0, &perm)?;
-        env.call_method(&activity, "requestPermissions", "([Ljava/lang/String;I)V", &[(&arr).into(), JValue::Int(1)])?;
-        Ok(())
-    })();
-    match res {
-        Ok(_) => log::info!("requested NEARBY_WIFI_DEVICES"),
-        Err(e) => log::error!("request_nearby_wifi_permission error: {e:?}"),
-    }
 }
 
 fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
