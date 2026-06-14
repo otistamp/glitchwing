@@ -9,7 +9,7 @@ use std::mem::MaybeUninit;
 use std::time::{Duration, Instant};
 
 use android_activity::input::{Axis, InputEvent, KeyAction, Keycode};
-use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
+use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent, WindowManagerFlags};
 use jni::objects::{JObject, JObjectArray, JValue};
 use ndk::{hardware_buffer_format::HardwareBufferFormat, native_window::NativeWindow};
 use net::{DroneLink, LinkConfig};
@@ -95,6 +95,9 @@ pub fn run(app: AndroidApp) {
                 win_h = nw.height().max(1) as usize;
                 fb = vec![0u32; win_w * win_h];
                 log::info!("window {win_w}x{win_h}");
+                // Keep the screen awake (thread-safe native window flag) so the
+                // phone never sleeps mid-flight and drops input focus / freezes us.
+                app.set_window_flags(WindowManagerFlags::KEEP_SCREEN_ON, WindowManagerFlags::empty());
             }
         }
         frame += 1;
@@ -174,7 +177,7 @@ pub fn run(app: AndroidApp) {
             }
             scale_video(&mut fb, win_w, win_h, &vid);
             let connected = last_frame.map_or(false, |t| t.elapsed() < Duration::from_secs(2));
-            draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, flags, pad.last_key);
+            draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, flags, pad.last_key, frame);
             if let Some(nw) = &window {
                 blit(nw, &fb, win_w, win_h);
             }
@@ -322,6 +325,7 @@ fn draw_hud(
     pitch: u8,
     flags: u8,
     last_key: u32,
+    frame: u64,
 ) {
     let mut c = hud::Canvas { buf: fb, w, h };
     let s = (w / 360).max(2); // font scale: crisp at native res
@@ -362,6 +366,17 @@ fn draw_hud(
 
     // small debug line (temporary) above the stick boxes
     c.glow_text(tx, y1 - bs - g - g, &format!("FLG{flags:02X} K{last_key}"), hud::GREEN, s.max(2));
+
+    // Loud, blinking "LINK LOST" banner when no video is arriving — fly back!
+    if !connected && (frame / 18).is_multiple_of(2) {
+        let bscale = s + 1;
+        let msg = "LINK LOST";
+        let tw = msg.len() * 8 * bscale;
+        let bx = w.saturating_sub(tw) / 2;
+        let by = h * 2 / 5;
+        c.panel(bx.saturating_sub(6), by.saturating_sub(6), tw + 12, 8 * bscale + 12, 210);
+        c.glow_text(bx, by, msg, hud::RED, bscale);
+    }
 }
 
 fn decode_into(jpeg: &[u8], vid: &mut [u32]) -> bool {
