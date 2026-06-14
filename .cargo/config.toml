@@ -1,0 +1,4 @@
+# Align native-lib LOAD segments to 16 KB for Android 15+ (16 KB page-size
+# devices). Applies only to the Android target, so desktop builds are unaffected.
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
