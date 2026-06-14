@@ -8,3 +8,8 @@ members = [
     "crates/viewer",
     "crates/android",
 ]
+
+# Optimize debug builds: the Android app does native-resolution software
+# rendering (millions of pixels/frame), which is too slow at opt-level 0.
+[profile.dev]
+opt-level = 2

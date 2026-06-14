@@ -1,4 +1,9 @@
 //! Android app loop: input → control, video → screen. Android-only.
+//!
+//! Renders at the phone's NATIVE resolution: the video is decoded at 240x320 and
+//! scaled (aspect-correct, centered) into the framebuffer, and the HUD is drawn
+//! crisp at full res inside a safe-area inset (clears rounded corners + camera
+//! cutout). Reuses `protocol`/`net`/`hud`. Stays disarmed until armed via Start.
 
 use std::mem::MaybeUninit;
 use std::time::{Duration, Instant};
@@ -36,7 +41,7 @@ struct Pad {
     flip: bool,
     calibrate: bool,
     last_key: u32,
-    raw: [f32; 8], // X, Y, Z, Rz, Rx, Ry, HatX, HatY (diagnostic)
+    raw: [f32; 8],
 }
 
 pub fn run(app: AndroidApp) {
@@ -45,13 +50,16 @@ pub fn run(app: AndroidApp) {
             .with_max_level(log::LevelFilter::Info)
             .with_tag("skyraptor"),
     );
-    log::info!("android_main (gamepad control + wifi bind)");
+    log::info!("android_main (native-res render)");
 
     let mut quit = false;
     let mut window: Option<NativeWindow> = None;
+    let mut win_w = 0usize;
+    let mut win_h = 0usize;
+    let mut fb: Vec<u32> = Vec::new(); // native-resolution framebuffer
+    let mut vid = vec![0u32; VIDEO_W * VIDEO_H]; // decoded video (source res)
     let mut link: Option<DroneLink> = None;
     let mut net_bound = false;
-    let mut fb = vec![0u32; VIDEO_W * VIDEO_H];
     let mut pad = Pad::default();
     let mut armed = false;
     let mut prev_throttle = CENTER;
@@ -69,23 +77,28 @@ pub fn run(app: AndroidApp) {
             PollEvent::Main(MainEvent::Destroy) => quit = true,
             _ => {}
         });
-        if got_window {
-            window = app.native_window();
-            if let Some(nw) = &window {
-                let _ = nw.set_buffers_geometry(
-                    VIDEO_W as i32,
-                    VIDEO_H as i32,
-                    Some(HardwareBufferFormat::R8G8B8A8_UNORM),
-                );
-            }
-        }
-        if lost_window {
+        // Re-acquire on (re)create; drop on terminate. Poll for the window each
+        // frame rather than relying solely on the InitWindow event (which may not
+        // fire on a warm resume).
+        if got_window || lost_window {
             window = None;
+            win_w = 0;
+        }
+        if window.is_none() {
+            window = app.native_window();
+        }
+        if let Some(nw) = &window {
+            if win_w == 0 {
+                // Keep the window's native size; just force RGBA. Blit 1:1 -> crisp.
+                let _ = nw.set_buffers_geometry(0, 0, Some(HardwareBufferFormat::R8G8B8A8_UNORM));
+                win_w = nw.width().max(1) as usize;
+                win_h = nw.height().max(1) as usize;
+                fb = vec![0u32; win_w * win_h];
+                log::info!("window {win_w}x{win_h}");
+            }
         }
         frame += 1;
 
-        // Bind the process to the WiFi network (so UDP reaches the no-internet drone
-        // even with cellular up), then start the link. Retry until the WiFi net appears.
         if !net_bound && frame % 30 == 1 && bind_to_wifi() {
             net_bound = true;
             match DroneLink::start(LinkConfig::default()) {
@@ -97,12 +110,10 @@ pub fn run(app: AndroidApp) {
             }
         }
 
-        // Drain gamepad input into `pad`.
         if let Ok(mut iter) = app.input_events_iter() {
             while iter.next(|e| handle_input(e, &mut pad)) {}
         }
 
-        // Shape axes (Android stick-up = -1, so negate for climb/forward).
         let dz = |v: f32| if v.abs() > DEADZONE { v } else { 0.0 };
         let shape = |raw: f32| axis_to_byte(expo(raw, EXPO) * MAX_DEFLECTION);
         let roll = shape(dz(pad.rx));
@@ -115,34 +126,22 @@ pub fn run(app: AndroidApp) {
         if pad.land { flags |= FLAG_LAND; }
         if pad.flip { flags |= FLAG_FLIP; }
         if pad.calibrate { flags |= FLAG_CALIBRATE; }
-        if pad.emergency {
-            flags |= FLAG_EMERGENCY;
-            armed = false;
-        }
+        if pad.emergency { flags |= FLAG_EMERGENCY; armed = false; }
 
         if let Some(l) = &link {
             if pad.arm_toggle {
                 armed = !armed;
-                if armed {
-                    l.control.arm();
-                    prev_throttle = CENTER;
-                } else {
-                    l.control.disarm();
-                }
+                if armed { l.control.arm(); prev_throttle = CENTER; } else { l.control.disarm(); }
             }
-            if pad.emergency {
-                l.control.arm(); // force-transmit the cut
-            }
+            if pad.emergency { l.control.arm(); }
             l.control.set(ControlState { roll, pitch, throttle, yaw, flags });
-            if !armed && !pad.emergency {
-                l.control.disarm();
-            }
+            if !armed && !pad.emergency { l.control.disarm(); }
             let mut latest = None;
             while let Ok(f) = l.frames.try_recv() {
                 latest = Some(f);
             }
             if let Some(jpeg) = latest {
-                if decode_into(&jpeg, &mut fb) {
+                if decode_into(&jpeg, &mut vid) {
                     connected = true;
                     fps_count += 1;
                 }
@@ -155,22 +154,20 @@ pub fn run(app: AndroidApp) {
             fps_count = 0;
             fps_since = Instant::now();
         }
-        if frame % 20 == 0 {
-            let r = pad.raw;
-            log::info!(
-                "[axes] X{:+.2} Y{:+.2} Z{:+.2} Rz{:+.2} Rx{:+.2} Ry{:+.2} Hx{:+.2} Hy{:+.2}",
-                r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]
-            );
+        if frame % 60 == 0 {
+            log::info!("[axes] X{:+.2} Y{:+.2} Z{:+.2} Rz{:+.2}", pad.raw[0], pad.raw[1], pad.raw[2], pad.raw[3]);
         }
 
-        let dbg = format!(
-            "LX{:+.2} LY{:+.2} RX{:+.2} RY{:+.2} K{}",
-            pad.lx, pad.ly, pad.rx, pad.ry, pad.last_key
-        );
-        draw_hud(&mut fb, armed, connected, shown_fps, throttle, yaw, roll, pitch, flags, &dbg);
-
-        if let Some(nw) = &window {
-            blit(nw, &fb);
+        // --- render at native resolution ---
+        if win_w > 0 && !fb.is_empty() {
+            for px in fb.iter_mut() {
+                *px = 0x0000_0000;
+            }
+            scale_video(&mut fb, win_w, win_h, &vid);
+            draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, flags, pad.last_key);
+            if let Some(nw) = &window {
+                blit(nw, &fb, win_w, win_h);
+            }
         }
     }
     if let Some(l) = link {
@@ -179,8 +176,26 @@ pub fn run(app: AndroidApp) {
     log::info!("android_main exiting");
 }
 
-/// Bind this process to the WiFi network so app traffic reaches the drone's
-/// no-internet AP even when cellular is the default network. Returns true on success.
+/// Scale the 240x320 video into `fb` (native size), aspect-correct and centered.
+fn scale_video(fb: &mut [u32], w: usize, h: usize, vid: &[u32]) {
+    let scale = (w as f32 / VIDEO_W as f32).min(h as f32 / VIDEO_H as f32);
+    let dw = (VIDEO_W as f32 * scale) as usize;
+    let dh = (VIDEO_H as f32 * scale) as usize;
+    if dw == 0 || dh == 0 {
+        return;
+    }
+    let ox = (w - dw) / 2;
+    let oy = (h - dh) / 2;
+    for dy in 0..dh {
+        let sy = dy * VIDEO_H / dh;
+        let row = (oy + dy) * w + ox;
+        let srow = sy * VIDEO_W;
+        for dx in 0..dw {
+            fb[row + dx] = vid[srow + dx * VIDEO_W / dw];
+        }
+    }
+}
+
 fn bind_to_wifi() -> bool {
     let ctx = ndk_context::android_context();
     let vm = match unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) } {
@@ -196,12 +211,7 @@ fn bind_to_wifi() -> bool {
     let mut try_bind = || -> jni::errors::Result<bool> {
         let name = env.new_string("connectivity")?;
         let cm = env
-            .call_method(
-                &activity,
-                "getSystemService",
-                "(Ljava/lang/String;)Ljava/lang/Object;",
-                &[(&name).into()],
-            )?
+            .call_method(&activity, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[(&name).into()])?
             .l()?;
         let networks: JObjectArray = env
             .call_method(&cm, "getAllNetworks", "()[Landroid/net/Network;", &[])?
@@ -211,12 +221,7 @@ fn bind_to_wifi() -> bool {
         for i in 0..len {
             let net = env.get_object_array_element(&networks, i)?;
             let caps = env
-                .call_method(
-                    &cm,
-                    "getNetworkCapabilities",
-                    "(Landroid/net/Network;)Landroid/net/NetworkCapabilities;",
-                    &[(&net).into()],
-                )?
+                .call_method(&cm, "getNetworkCapabilities", "(Landroid/net/Network;)Landroid/net/NetworkCapabilities;", &[(&net).into()])?
                 .l()?;
             if caps.is_null() {
                 continue;
@@ -226,12 +231,7 @@ fn bind_to_wifi() -> bool {
                 .z()?;
             if is_wifi {
                 let ok = env
-                    .call_method(
-                        &cm,
-                        "bindProcessToNetwork",
-                        "(Landroid/net/Network;)Z",
-                        &[(&net).into()],
-                    )?
+                    .call_method(&cm, "bindProcessToNetwork", "(Landroid/net/Network;)Z", &[(&net).into()])?
                     .z()?;
                 return Ok(ok);
             }
@@ -278,7 +278,6 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
             let kc = k.key_code();
             if down {
                 pad.last_key = u32::from(kc);
-                log::info!("[btn] {kc:?} = {}", u32::from(kc));
             }
             match kc {
                 Keycode::ButtonStart => {
@@ -293,7 +292,6 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
                 Keycode::ButtonX => pad.calibrate = down,
                 _ => {}
             }
-            // Consume all key events so a BACK-mapped button can't finish the activity.
             InputStatus::Handled
         }
         _ => InputStatus::Unhandled,
@@ -303,6 +301,8 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
 #[allow(clippy::too_many_arguments)]
 fn draw_hud(
     fb: &mut [u32],
+    w: usize,
+    h: usize,
     armed: bool,
     connected: bool,
     fps: u32,
@@ -311,46 +311,67 @@ fn draw_hud(
     roll: u8,
     pitch: u8,
     flags: u8,
-    dbg: &str,
+    last_key: u32,
 ) {
-    let mut c = hud::Canvas { buf: fb, w: VIDEO_W, h: VIDEO_H };
-    c.neon_frame(if armed { hud::GREEN } else { hud::RED });
-    c.panel(2, 2, VIDEO_W - 4, 44, 150);
-    let (txt, col) = if armed { ("[ARMED]", hud::GREEN) } else { ("[STANDBY]", hud::AMBER) };
-    c.glow_text(5, 4, txt, col, 1);
-    let link = if connected { "LINK" } else { "NO SIG" };
-    c.glow_text(96, 4, link, if connected { hud::CYAN } else { hud::AMBER }, 1);
-    c.glow_text(168, 4, &format!("FPS{fps:02}"), hud::CYAN, 1);
-    c.glow_text(5, 15, "THR", hud::CYAN, 1);
-    c.bar(34, 15, VIDEO_W - 44, 7, throttle as f32 / 255.0, if armed { hud::GREEN } else { hud::AMBER });
-    c.glow_text(5, 26, &format!("FLG{flags:02X}"), hud::MAGENTA, 1);
-    c.glow_text(5, 37, dbg, hud::GREEN, 1);
+    let mut c = hud::Canvas { buf: fb, w, h };
+    let s = (w / 360).max(2); // font scale: crisp at native res
+    let g = 8 * s; // glyph cell
+    // Safe-area inset: clears rounded corners + top camera cutout.
+    let mx = w / 18;
+    let top = h / 12;
+    let bot = h / 18;
+    let (x0, y0, x1, y1) = (mx, top, w - mx, h - bot);
+    let fcol = if armed { hud::GREEN } else { hud::RED };
 
-    let bs = 46;
-    c.stick_box(8, VIDEO_H - bs - 12, bs, yaw, throttle, hud::MAGENTA);
-    c.glow_text(8, VIDEO_H - 10, "YAW/THR", hud::MAGENTA, 1);
-    c.stick_box(VIDEO_W - bs - 9, VIDEO_H - bs - 12, bs, roll, pitch, hud::CYAN);
-    c.glow_text(VIDEO_W - 64, VIDEO_H - 10, "ROL/PIT", hud::CYAN, 1);
+    // inset neon border
+    c.hline(x0, y0, x1 - x0, fcol);
+    c.hline(x0, y1, x1 - x0, fcol);
+    c.vline(x0, y0, y1 - y0, fcol);
+    c.vline(x1, y0, y1 - y0, fcol);
+
+    // top status panel
+    let ph = g * 2 + 6 * s;
+    c.panel(x0 + s, y0 + s, x1 - x0 - 2 * s, ph, 170);
+    let tx = x0 + 2 * s;
+    let (txt, col) = if armed { ("[ARMED]", hud::GREEN) } else { ("[STANDBY]", hud::AMBER) };
+    c.glow_text(tx, y0 + 2 * s, txt, col, s);
+    let link = if connected { "LINK" } else { "NO SIG" };
+    c.glow_text(x1 - 12 * g, y0 + 2 * s, link, if connected { hud::CYAN } else { hud::AMBER }, s);
+    c.glow_text(x1 - 5 * g, y0 + 2 * s, &format!("FPS{fps:02}"), hud::CYAN, s);
+    // throttle bar row
+    c.glow_text(tx, y0 + 2 * s + g, "THR", hud::CYAN, s);
+    let bar_x = tx + 4 * g;
+    c.bar(bar_x, y0 + 2 * s + g, x1 - bar_x - 2 * s, g - 2 * s, throttle as f32 / 255.0, if armed { hud::GREEN } else { hud::AMBER });
+
+    // stick boxes near the bottom safe corners
+    let bs = w / 4;
+    c.stick_box(x0 + 2 * s, y1 - bs - g, bs, yaw, throttle, hud::MAGENTA);
+    c.glow_text(x0 + 2 * s, y1 - g + s, "YAW/THR", hud::MAGENTA, s.max(2));
+    c.stick_box(x1 - bs - 2 * s, y1 - bs - g, bs, roll, pitch, hud::CYAN);
+    c.glow_text(x1 - 8 * g, y1 - g + s, "ROL/PIT", hud::CYAN, s.max(2));
+
+    // small debug line (temporary) above the stick boxes
+    c.glow_text(tx, y1 - bs - g - g, &format!("FLG{flags:02X} K{last_key}"), hud::GREEN, s.max(2));
 }
 
-fn decode_into(jpeg: &[u8], fb: &mut [u32]) -> bool {
+fn decode_into(jpeg: &[u8], vid: &mut [u32]) -> bool {
     let Ok(rgb) = JpegDecoder::new(jpeg).decode() else { return false };
     if rgb.len() < VIDEO_W * VIDEO_H * 3 {
         return false;
     }
-    for (px, chunk) in fb.iter_mut().zip(rgb.chunks_exact(3)) {
+    for (px, chunk) in vid.iter_mut().zip(rgb.chunks_exact(3)) {
         *px = ((chunk[0] as u32) << 16) | ((chunk[1] as u32) << 8) | chunk[2] as u32;
     }
     true
 }
 
-fn blit(nw: &NativeWindow, fb: &[u32]) {
+fn blit(nw: &NativeWindow, fb: &[u32], w_buf: usize, h_buf: usize) {
     let Ok(mut guard) = nw.lock(None) else { return };
-    let (w, h, stride) = (guard.width().min(VIDEO_W), guard.height().min(VIDEO_H), guard.stride());
+    let (w, h, stride) = (guard.width().min(w_buf), guard.height().min(h_buf), guard.stride());
     let Some(bytes) = guard.bytes() else { return };
     for y in 0..h {
         for x in 0..w {
-            let px = fb[y * VIDEO_W + x];
+            let px = fb[y * w_buf + x];
             let i = (y * stride + x) * 4;
             bytes[i] = MaybeUninit::new((px >> 16) as u8);
             bytes[i + 1] = MaybeUninit::new((px >> 8) as u8);
