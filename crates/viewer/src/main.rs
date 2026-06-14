@@ -69,6 +69,7 @@ fn main() {
     let (mut snap_n, mut rec_n) = (0u32, 0u32);
     let (mut fps_count, mut shown_fps) = (0u32, 0u32);
     let mut fps_since = Instant::now();
+    let mut tick: u64 = 0;
 
     fs::create_dir_all("snapshots").ok();
     fs::create_dir_all("recordings").ok();
@@ -210,33 +211,44 @@ fn main() {
             }
         }
 
-        // status border: green armed / red disarmed
-        let border = if armed { 0x0000_FF00 } else { 0x00FF_0000 };
-        for x in 0..W {
-            buf[x] = border;
-            buf[(H - 1) * W + x] = border;
-        }
-        for y in 0..H {
-            buf[y * W] = border;
-            buf[y * W + (W - 1)] = border;
-        }
-
-        // --- HUD ---
+        // --- cyberpunk HUD ---
         if fps_since.elapsed() >= Duration::from_secs(1) {
             shown_fps = fps_count;
             fps_count = 0;
             fps_since = Instant::now();
         }
-        let white = 0x00FF_FFFF;
-        let mut canvas = hud::Canvas { buf: &mut buf, w: W, h: H };
-        let (state_txt, state_col) = if armed { ("ARMED", 0x0000_FF00) } else { ("DISARMED", 0x00FF_4040) };
-        canvas.text(4, 4, state_txt, state_col, 1);
-        canvas.text(4, 14, &format!("THR {throttle:3} YAW {yaw:3}"), white, 1);
-        canvas.text(4, 24, &format!("ROL {roll:3} PIT {pitch:3}"), white, 1);
-        canvas.text(4, 34, &format!("TRIM R{:+} P{:+} Y{:+}", trim.roll, trim.pitch, trim.yaw), white, 1);
-        canvas.text(4, 44, &format!("FPS {shown_fps} FLG {flags:02X}"), white, 1);
-        if recorder.is_some() {
-            canvas.text(4, 54, "REC", 0x00FF_0000, 1);
+        tick += 1;
+        let blink = (tick / 18).is_multiple_of(2);
+        {
+            let mut c = hud::Canvas { buf: &mut buf, w: W, h: H };
+            c.scanlines();
+            c.neon_frame(if armed { hud::GREEN } else { hud::RED });
+
+            // top status panel
+            c.panel(4, 4, W - 8, 46, 150);
+            c.glow_text(8, 6, "SKYRAPTOR //DRCX5", hud::CYAN, 1);
+            let (txt, col) = if armed { ("[ARMED]", hud::GREEN) } else { ("[STANDBY]", hud::AMBER) };
+            c.glow_text(8, 17, txt, col, 1);
+            c.glow_text(96, 17, &format!("FPS{shown_fps:02}"), hud::CYAN, 1);
+            c.glow_text(160, 17, &format!("FLG{flags:02X}"), hud::MAGENTA, 1);
+            c.glow_text(8, 28, "THR", hud::CYAN, 1);
+            c.bar(34, 28, W - 44, 7, throttle as f32 / 255.0, if armed { hud::GREEN } else { hud::AMBER });
+            c.glow_text(8, 40, &format!("TRIM R{:+03} P{:+03} Y{:+03}", trim.roll, trim.pitch, trim.yaw), hud::CYAN, 1);
+
+            // stick boxes (FPV-OSD style) in the bottom corners
+            let bs = 46;
+            c.stick_box(8, H - bs - 12, bs, yaw, throttle, hud::MAGENTA); // left: yaw / throttle
+            c.glow_text(8, H - 10, "YAW/THR", hud::MAGENTA, 1);
+            c.stick_box(W - bs - 9, H - bs - 12, bs, roll, pitch, hud::CYAN); // right: roll / pitch
+            c.glow_text(W - 64, H - 10, "ROL/PIT", hud::CYAN, 1);
+
+            if recorder.is_some() && blink {
+                c.glow_text(W - 60, 6, "*REC", hud::RED, 1);
+            }
+            if emergency {
+                c.panel(W / 2 - 40, H / 2 - 10, 80, 20, 200);
+                c.glow_text(W / 2 - 34, H / 2 - 4, "E-STOP", hud::RED, 1);
+            }
         }
 
         window.update_with_buffer(&buf, W, H).expect("blit");
