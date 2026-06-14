@@ -92,11 +92,12 @@ pub fn run(app: AndroidApp) {
             while iter.next(|e| handle_input(e, &mut pad)) {}
         }
 
-        // Arming edge.
+        // Arming edge. Reset throttle to center on arm so we never arm into a climb.
         if pad.arm_toggle {
             armed = !armed;
             if armed {
                 link.control.arm();
+                prev_throttle = CENTER;
             } else {
                 link.control.disarm();
             }
@@ -109,13 +110,10 @@ pub fn run(app: AndroidApp) {
         let roll = shape(dz(pad.rx));
         let pitch = shape(dz(-pad.ry));
         let yaw = shape(dz(pad.lx));
-        let throttle = if armed {
-            prev_throttle = ramp_toward(prev_throttle, shape(dz(-pad.ly)), THROTTLE_RAMP);
-            prev_throttle
-        } else {
-            prev_throttle = CENTER;
-            CENTER
-        };
+        // Always compute throttle from the stick (so the HUD reflects it even when
+        // disarmed); the net layer only transmits active commands while armed.
+        prev_throttle = ramp_toward(prev_throttle, shape(dz(-pad.ly)), THROTTLE_RAMP);
+        let throttle = prev_throttle;
 
         let mut flags = 0u8;
         if pad.takeoff {
@@ -186,10 +184,12 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
         }
         InputEvent::KeyEvent(k) => {
             let down = matches!(k.action(), KeyAction::Down);
+            let kc = k.key_code();
             if down {
-                pad.last_key = u32::from(k.key_code());
+                pad.last_key = u32::from(kc);
+                log::info!("[btn] {kc:?} = {}", u32::from(kc)); // for documenting the controller
             }
-            match k.key_code() {
+            match kc {
                 Keycode::ButtonStart => {
                     if down && k.repeat_count() == 0 {
                         pad.arm_toggle = true;
