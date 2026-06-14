@@ -44,6 +44,13 @@ impl ControlState {
     }
 }
 
+/// Map a normalized axis value (`-1.0..=1.0`) to a centered protocol byte
+/// (`0..=255`, with `0.0` → `CENTER` (128)). Out-of-range input is clamped.
+pub fn axis_to_byte(v: f32) -> u8 {
+    let clamped = v.clamp(-1.0, 1.0);
+    ((clamped + 1.0) * 0.5 * 255.0).round() as u8
+}
+
 /// Checksum: XOR of the five payload bytes (roll, pitch, throttle, yaw, flags),
 /// bumped by 1 if it collides with the header (`0x66`) or footer (`0x99`).
 pub fn checksum(roll: u8, pitch: u8, throttle: u8, yaw: u8, flags: u8) -> u8 {
@@ -186,6 +193,28 @@ mod tests {
     #[test]
     fn idle_keepalive_matches_reference() {
         assert_eq!(idle_keepalive(), [0xaa, 0x80, 0x80, 0x00, 0x80, 0x00, 0x80, 0x55]);
+    }
+
+    #[test]
+    fn axis_center_is_128() {
+        assert_eq!(axis_to_byte(0.0), 128);
+    }
+
+    #[test]
+    fn axis_extremes_map_to_full_range() {
+        assert_eq!(axis_to_byte(1.0), 255);
+        assert_eq!(axis_to_byte(-1.0), 0);
+    }
+
+    #[test]
+    fn axis_clamps_out_of_range() {
+        assert_eq!(axis_to_byte(2.5), 255);
+        assert_eq!(axis_to_byte(-2.5), 0);
+    }
+
+    #[test]
+    fn axis_half_is_about_three_quarters() {
+        assert_eq!(axis_to_byte(0.5), 191);
     }
 
     #[test]

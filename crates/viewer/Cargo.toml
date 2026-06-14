@@ -1,0 +1,16 @@
+[package]
+name = "viewer"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop live viewer for the DRCX5: MJPEG video window + keyboard/gamepad control"
+
+[dependencies]
+net = { path = "../net" }
+protocol = { path = "../protocol" }
+minifb = "0.27"
+gilrs = "0.11"
+zune-jpeg = "0.4"
+
+[[bin]]
+name = "viewer"
+path = "src/main.rs"

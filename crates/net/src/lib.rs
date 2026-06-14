@@ -164,15 +164,13 @@ impl DroneLink {
                         let _ = video_sock.send_to(&VIDEO_START, cfg.video_addr);
                         last_req = Instant::now();
                     }
-                    match video_sock.recv(&mut buf) {
-                        Ok(n) => {
-                            if let Some(frame) = reasm.push(&buf[..n]) {
-                                if frames_tx.send(frame).is_err() {
-                                    break; // receiver dropped
-                                }
+                    // On timeout/would-block, recv errors and we loop to check the stop flag.
+                    if let Ok(n) = video_sock.recv(&mut buf) {
+                        if let Some(frame) = reasm.push(&buf[..n]) {
+                            if frames_tx.send(frame).is_err() {
+                                break; // receiver dropped
                             }
                         }
-                        Err(_) => {} // timeout / would-block: loop to check stop flag
                     }
                 }
             })
