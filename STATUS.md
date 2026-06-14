@@ -30,22 +30,26 @@ Pure-Rust control + video for the Vivitar Sky Raptor **DRCX5** toy drone
     BACK-mapped button can't close the app.
   - Toolchain: `cargo-apk` + NDK r27, 16 KB-aligned. Build: `scripts/build-android.sh`.
 
-## Next (resume here)
+## Status: maiden flight flown ✅
 
-- **Finish Android control bench test (props off).** Confirmed so far: video,
-  arming, and axis mapping (left=X/Y yaw/throttle, right=Z/Rz roll/pitch) all
-  correct; A/B swapped to A=land, B=takeoff. **To verify:** Start=arm →
-  B=takeoff spins motors → left stick throttle/yaw, right stick roll/pitch →
-  A=land, Select=EMERGENCY. (Altitude-hold drone: motors spin on takeoff, not
-  throttle alone.)
-- **Then remove the temporary diagnostics** in `crates/android/src/app.rs`
-  (the `[axes]`/`[btn]`/`[ctl]` `log::info!` calls and `Pad.raw`).
+Android app flew the drone with live video + gamepad control. Confirmed:
+- Video (native-res, crisp HUD, safe-area inset for Pixel cutout/corners).
+- Gamepad: left stick X/Y = yaw/throttle, right Z/Rz = roll/pitch; Start=arm,
+  B=takeoff, A=land, X=calibrate, Y=flip, Select/Mode=EMERGENCY.
+- WiFi-bind (works with cellular on), self-healing watchdog (re-binds when
+  disarmed), keep-screen-on, LINK-LOST warning.
+- **Maiden flight ended by WiFi range (RSSI -84) — a hardware limit. Fly close.**
+
+## Next
+
+- More close-range flights to build confidence + tune EXPO/MAX_DEFLECTION.
+- Remove temporary diagnostics in `crates/android/src/app.rs` (`[axes]` log,
+  `Pad.raw`, the `K{last_key}` HUD debug).
 - Optional: wire spare buttons / 8-way D-pad (headless, trim).
-- Real tethered flight test.
+- Quality-of-life: signal-strength indicator; in-app re-arm-on-reconnect.
 
-Resume build/deploy: `scripts/build-android.sh build` then
-`adb install -r target/debug/apk/skyraptor-android.apk`. Filtered logs:
-`adb logcat -s skyraptor:I`.
+Build/deploy: `scripts/build-android.sh build` then
+`adb install -r target/debug/apk/skyraptor-android.apk`. Logs: `adb logcat -s skyraptor:I`.
 
 ## Tooling notes
 
