@@ -59,11 +59,11 @@ pub fn run(app: AndroidApp) {
     let mut fb: Vec<u32> = Vec::new(); // native-resolution framebuffer
     let mut vid = vec![0u32; VIDEO_W * VIDEO_H]; // decoded video (source res)
     let mut link: Option<DroneLink> = None;
-    let mut net_bound = false;
+    let mut last_frame: Option<Instant> = None;
+    let mut last_attempt: Option<Instant> = None;
     let mut pad = Pad::default();
     let mut armed = false;
     let mut prev_throttle = CENTER;
-    let mut connected = false;
     let (mut fps_count, mut shown_fps) = (0u32, 0u32);
     let mut fps_since = Instant::now();
     let mut frame: u64 = 0;
@@ -99,14 +99,23 @@ pub fn run(app: AndroidApp) {
         }
         frame += 1;
 
-        if !net_bound && frame % 30 == 1 && bind_to_wifi() {
-            net_bound = true;
-            match DroneLink::start(LinkConfig::default()) {
-                Ok(l) => {
-                    log::info!("DroneLink started (bound to wifi)");
-                    link = Some(l);
+        // Connection watchdog: (re)bind to wifi + (re)start the link when no video
+        // is arriving. NEVER while armed — don't disrupt a flight.
+        let stale = last_frame.map_or(true, |t| t.elapsed() > Duration::from_secs(3));
+        let ready = last_attempt.map_or(true, |t| t.elapsed() > Duration::from_secs(2));
+        if !armed && stale && ready {
+            last_attempt = Some(Instant::now());
+            if bind_to_wifi() {
+                if let Some(old) = link.take() {
+                    old.stop();
                 }
-                Err(e) => log::error!("DroneLink failed: {e}"),
+                match DroneLink::start(LinkConfig::default()) {
+                    Ok(l) => {
+                        log::info!("DroneLink (re)started");
+                        link = Some(l);
+                    }
+                    Err(e) => log::error!("DroneLink failed: {e}"),
+                }
             }
         }
 
@@ -142,7 +151,7 @@ pub fn run(app: AndroidApp) {
             }
             if let Some(jpeg) = latest {
                 if decode_into(&jpeg, &mut vid) {
-                    connected = true;
+                    last_frame = Some(Instant::now());
                     fps_count += 1;
                 }
             }
@@ -164,6 +173,7 @@ pub fn run(app: AndroidApp) {
                 *px = 0x0000_0000;
             }
             scale_video(&mut fb, win_w, win_h, &vid);
+            let connected = last_frame.map_or(false, |t| t.elapsed() < Duration::from_secs(2));
             draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, flags, pad.last_key);
             if let Some(nw) = &window {
                 blit(nw, &fb, win_w, win_h);
