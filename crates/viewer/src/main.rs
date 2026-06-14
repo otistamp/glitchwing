@@ -12,8 +12,6 @@
 //! Capture: P snapshot (.jpg) · V toggle recording (.mjpeg) · Esc quit
 //! Gamepad: left stick throttle/yaw · right stick roll/pitch · Start arm · Select EMERGENCY
 
-mod hud;
-
 use std::fs::{self, File};
 use std::io::Write;
 use std::time::{Duration, Instant};

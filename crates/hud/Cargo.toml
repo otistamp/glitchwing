@@ -1,0 +1,8 @@
+[package]
+name = "hud"
+version = "0.1.0"
+edition = "2021"
+description = "Cyberpunk software-framebuffer HUD renderer (shared by desktop viewer + Android app)"
+
+[dependencies]
+font8x8 = "0.3"

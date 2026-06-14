@@ -363,6 +363,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hud"
+version = "0.1.0"
+dependencies = [
+ "font8x8",
+]
+
+[[package]]
 name = "id-arena"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -986,8 +993,12 @@ version = "0.1.0"
 dependencies = [
  "android-activity",
  "android_logger",
+ "hud",
  "log",
  "ndk",
+ "net",
+ "protocol",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -1134,8 +1145,8 @@ checksum = "579a42fc0b8e0c63b76519a339be31bed574929511fa53c1a3acae26eb258f29"
 name = "viewer"
 version = "0.1.0"
 dependencies = [
- "font8x8",
  "gilrs",
+ "hud",
  "minifb",
  "net",
  "protocol",

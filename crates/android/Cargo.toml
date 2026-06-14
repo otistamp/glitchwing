@@ -14,6 +14,10 @@ android-activity = { version = "0.6", features = ["native-activity"] }
 ndk = "0.9"
 log = "0.4"
 android_logger = "0.14"
+protocol = { path = "../protocol" }
+net = { path = "../net" }
+hud = { path = "../hud" }
+zune-jpeg = "0.4"
 
 [package.metadata.android]
 package = "app.skyraptor.drcx5"

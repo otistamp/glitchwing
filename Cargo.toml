@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/protocol",
     "crates/net",
+    "crates/hud",
     "crates/skyctl",
     "crates/viewer",
     "crates/android",
