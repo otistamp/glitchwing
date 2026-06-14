@@ -30,11 +30,22 @@ Pure-Rust control + video for the Vivitar Sky Raptor **DRCX5** toy drone
     BACK-mapped button can't close the app.
   - Toolchain: `cargo-apk` + NDK r27, 16 KB-aligned. Build: `scripts/build-android.sh`.
 
-## Next
+## Next (resume here)
 
-- Bench-verify gamepad control on the phone (arm + sticks → motors, props off).
-- Optional: wire spare buttons / 8-way D-pad (headless, trim, etc.).
-- Real tethered flight test (beyond props-off bench check).
+- **Finish Android control bench test (props off).** Confirmed so far: video,
+  arming, and axis mapping (left=X/Y yaw/throttle, right=Z/Rz roll/pitch) all
+  correct; A/B swapped to A=land, B=takeoff. **To verify:** Start=arm →
+  B=takeoff spins motors → left stick throttle/yaw, right stick roll/pitch →
+  A=land, Select=EMERGENCY. (Altitude-hold drone: motors spin on takeoff, not
+  throttle alone.)
+- **Then remove the temporary diagnostics** in `crates/android/src/app.rs`
+  (the `[axes]`/`[btn]`/`[ctl]` `log::info!` calls and `Pad.raw`).
+- Optional: wire spare buttons / 8-way D-pad (headless, trim).
+- Real tethered flight test.
+
+Resume build/deploy: `scripts/build-android.sh build` then
+`adb install -r target/debug/apk/skyraptor-android.apk`. Filtered logs:
+`adb logcat -s skyraptor:I`.
 
 ## Tooling notes
 
