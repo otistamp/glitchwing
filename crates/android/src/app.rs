@@ -75,6 +75,7 @@ pub fn run(app: AndroidApp) {
     let mut link: Option<DroneLink> = None;
     let mut last_frame: Option<Instant> = None;
     let mut last_attempt: Option<Instant> = None;
+    let mut last_wifi_request: Option<Instant> = None; // debounce tap-to-reconnect
     let mut pad = Pad::default();
     let mut armed = false;
     let mut prev_throttle = CENTER;
@@ -422,15 +423,20 @@ pub fn run(app: AndroidApp) {
                             }
                         }
                     } else if !connected {
-                        // No video: tapping anywhere on the feed asks the system to
-                        // join the drone AP. The WifiNetworkSpecifier scan needs
-                        // NEARBY_WIFI_DEVICES, granted once in Settings.
-                        if nearby_wifi_granted() {
-                            request_drone_wifi();
-                        } else {
-                            log::warn!("NEARBY_WIFI_DEVICES not granted — enable it in Settings to join the drone wifi");
+                        // No video: tapping the feed asks the system to join the drone
+                        // AP. Debounce — every tap would otherwise re-issue the request
+                        // and keep the system WiFi dialog on top (it steals gamepad
+                        // focus, so you can't arm). Fire at most once per ~8 s.
+                        let ready = last_wifi_request.map_or(true, |t| t.elapsed() > Duration::from_secs(8));
+                        if ready {
+                            if nearby_wifi_granted() {
+                                request_drone_wifi();
+                                last_wifi_request = Some(Instant::now());
+                            } else {
+                                log::warn!("NEARBY_WIFI_DEVICES not granted — enable it in Settings to join the drone wifi");
+                            }
+                            last_attempt = None; // let the watchdog rebind+restart promptly
                         }
-                        last_attempt = None; // let the watchdog rebind+restart promptly
                     }
                 }
             }
