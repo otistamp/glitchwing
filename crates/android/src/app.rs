@@ -42,6 +42,7 @@ struct Pad {
     emergency: bool,
     estop: bool, // emergency one-shot edge (for the sim kill)
     speed_cycle: bool, // one-shot edge: cycle the speed preset
+    yaw_trim_mod: bool, // held: D-pad left/right trims yaw instead of roll
     takeoff: bool,
     land: bool,
     flip: bool,
@@ -78,7 +79,7 @@ pub fn run(app: AndroidApp) {
     let mut pad = Pad::default();
     let mut armed = false;
     let mut prev_throttle = CENTER;
-    let (mut trim_roll, mut trim_pitch): (i8, i8) = (0, 0);
+    let (mut trim_roll, mut trim_pitch, mut trim_yaw): (i8, i8, i8) = (0, 0, 0);
     let mut headless = false;
     let (mut prev_hx, mut prev_hy) = (0.0f32, 0.0f32);
     let (mut fps_count, mut shown_fps) = (0u32, 0u32);
@@ -246,19 +247,26 @@ pub fn run(app: AndroidApp) {
             pad.estop = false;
         } else {
             // D-pad trim (edge-triggered ±1 per press), headless toggle, reset trim.
+            // Holding the YAW TRIM button retargets D-pad left/right to yaw.
             const TRIM_LIMIT: i8 = 40;
-            if pad.hx > 0.5 && prev_hx <= 0.5 { trim_roll = (trim_roll + 1).min(TRIM_LIMIT); }
-            if pad.hx < -0.5 && prev_hx >= -0.5 { trim_roll = (trim_roll - 1).max(-TRIM_LIMIT); }
+            if pad.hx > 0.5 && prev_hx <= 0.5 {
+                if pad.yaw_trim_mod { trim_yaw = (trim_yaw + 1).min(TRIM_LIMIT); }
+                else { trim_roll = (trim_roll + 1).min(TRIM_LIMIT); }
+            }
+            if pad.hx < -0.5 && prev_hx >= -0.5 {
+                if pad.yaw_trim_mod { trim_yaw = (trim_yaw - 1).max(-TRIM_LIMIT); }
+                else { trim_roll = (trim_roll - 1).max(-TRIM_LIMIT); }
+            }
             if pad.hy < -0.5 && prev_hy >= -0.5 { trim_pitch = (trim_pitch + 1).min(TRIM_LIMIT); }
             if pad.hy > 0.5 && prev_hy <= 0.5 { trim_pitch = (trim_pitch - 1).max(-TRIM_LIMIT); }
             prev_hx = pad.hx;
             prev_hy = pad.hy;
             if pad.headless_toggle { headless = !headless; pad.headless_toggle = false; }
-            if pad.trim_reset { trim_roll = 0; trim_pitch = 0; pad.trim_reset = false; }
+            if pad.trim_reset { trim_roll = 0; trim_pitch = 0; trim_yaw = 0; pad.trim_reset = false; }
 
             roll = apply_trim(shape(dz(pad.rx)), trim_roll);
             pitch = apply_trim(shape(dz(-pad.ry)), trim_pitch);
-            yaw = shape(dz(pad.lx));
+            yaw = apply_trim(shape(dz(pad.lx)), trim_yaw);
             // Throttle source: L2/R2 triggers (R2 up, L2 down) or the left-stick Y.
             let thr_in = if bindings.throttle_triggers {
                 pad.rtrig.max(if pad.r2 { 1.0 } else { 0.0 }) - pad.ltrig.max(if pad.l2 { 1.0 } else { 0.0 })
@@ -367,17 +375,6 @@ pub fn run(app: AndroidApp) {
                         sim_alt = 0.0;
                         sim_flip = 0.0;
                         heading = 0.0;
-                    } else if !connected && inside(reconnect_btn(win_w, win_h)) {
-                        // Explicit user action: ask the system to join the drone AP.
-                        // The WifiNetworkSpecifier scan needs NEARBY_WIFI_DEVICES,
-                        // granted once in Settings (can't be requested from a pure
-                        // NativeActivity).
-                        if nearby_wifi_granted() {
-                            request_drone_wifi();
-                        } else {
-                            log::warn!("NEARBY_WIFI_DEVICES not granted — enable it in Settings to join the drone wifi");
-                        }
-                        last_attempt = None; // let the watchdog rebind+restart promptly
                     } else if connected && inside(photo_btn(win_w, win_h)) {
                         // Snapshot: write the latest raw JPEG straight to a file.
                         match (&snap_dir, &last_jpeg) {
@@ -418,6 +415,16 @@ pub fn run(app: AndroidApp) {
                                 }
                             }
                         }
+                    } else if !connected {
+                        // No video: tapping anywhere on the feed asks the system to
+                        // join the drone AP. The WifiNetworkSpecifier scan needs
+                        // NEARBY_WIFI_DEVICES, granted once in Settings.
+                        if nearby_wifi_granted() {
+                            request_drone_wifi();
+                        } else {
+                            log::warn!("NEARBY_WIFI_DEVICES not granted — enable it in Settings to join the drone wifi");
+                        }
+                        last_attempt = None; // let the watchdog rebind+restart promptly
                     }
                 }
             }
@@ -446,7 +453,7 @@ pub fn run(app: AndroidApp) {
                     .filter(|(_, t)| t.elapsed() < Duration::from_millis(1500))
                     .map(|(m, _)| m.as_str());
                 let rec_secs = rec_start.map(|t| t.elapsed().as_secs());
-                draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless, bindings.speed, note, rec_secs);
+                draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, trim_yaw, headless, bindings.speed, note, rec_secs);
                 // Camera flash: white out the frame briefly right after a capture.
                 if snap_note.as_ref().is_some_and(|(_, t)| t.elapsed() < Duration::from_millis(80)) {
                     for px in fb.iter_mut() {
@@ -800,6 +807,7 @@ fn handle_input(event: &InputEvent, pad: &mut Pad, b: &settings::Bindings) -> In
             if kc == b.get(Emergency) { pad.emergency = down; }
             if kc == b.get(Emergency) && edge { pad.estop = true; }
             if kc == b.get(Speed) && edge { pad.speed_cycle = true; }
+            if kc == b.get(YawTrim) { pad.yaw_trim_mod = down; }
             if kc == 104 { pad.l2 = down; } // ButtonL2 (digital trigger)
             if kc == 105 { pad.r2 = down; } // ButtonR2
             InputStatus::Handled
@@ -851,17 +859,6 @@ fn save_snapshot(dir: &str, jpeg: &[u8]) -> std::io::Result<String> {
     Ok(name)
 }
 
-/// On-screen reconnect-button rect (x, y, w, h), in native pixels. Shared by the
-/// HUD (to draw) and the loop (to hit-test the tap).
-fn reconnect_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
-    // Just above the stick boxes, clear of the KEY MAP/SIM buttons.
-    let s = (w / 360).max(2);
-    let stick_top = (h - h / 18) - w / 4 - 8 * s;
-    let bw = w / 3;
-    let bh = h / 22;
-    (w / 2 - bw / 2, stick_top - bh - h / 40, bw, bh)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn draw_hud(
     fb: &mut [u32],
@@ -877,6 +874,7 @@ fn draw_hud(
     frame: u64,
     trim_roll: i8,
     trim_pitch: i8,
+    trim_yaw: i8,
     headless: bool,
     speed: u8,
     snap_note: Option<&str>,
@@ -916,8 +914,8 @@ fn draw_hud(
 
     // trim + headless row
     let row2 = y0 + 2 * s + 2 * g;
-    c.glow_text(tx, row2, &format!("TRM R{trim_roll:+03} P{trim_pitch:+03}"), hud::CYAN, s);
-    c.glow_text(tx + 14 * g, row2, &format!("SPD {}", settings::speed_name(speed)), hud::CYAN, s);
+    c.glow_text(tx, row2, &format!("TRM R{trim_roll:+03} P{trim_pitch:+03} Y{trim_yaw:+03}"), hud::CYAN, s);
+    c.glow_text(tx + 19 * g, row2, &format!("SPD {}", settings::speed_name(speed)), hud::CYAN, s);
     if headless {
         c.glow_text(x1 - 9 * g, row2, "HEADLESS", hud::MAGENTA, s);
     }
@@ -974,28 +972,20 @@ fn draw_hud(
         }
     }
 
-    // Tappable reconnect button (only while disconnected).
-    if !connected {
-        let (bx, by, bw, bh) = reconnect_btn(w, h);
-        c.panel(bx, by, bw, bh, 220);
-        c.hline(bx, by, bw, hud::CYAN);
-        c.hline(bx, by + bh, bw, hud::CYAN);
-        c.vline(bx, by, bh, hud::CYAN);
-        c.vline(bx + bw, by, bh, hud::CYAN);
-        let label = "TAP: RECONNECT";
-        let lw = label.len() * 8 * s;
-        c.glow_text(bx + bw.saturating_sub(lw) / 2, by + bh.saturating_sub(8 * s) / 2, label, hud::CYAN, s);
-    }
-
     // Loud, blinking "LINK LOST" banner when no video is arriving — fly back!
+    // Tapping anywhere on the feed reconnects, so prompt for it right here.
     if !connected && (frame / 18).is_multiple_of(2) {
         let bscale = s + 1;
         let msg = "LINK LOST";
         let tw = msg.len() * 8 * bscale;
         let bx = w.saturating_sub(tw) / 2;
         let by = h * 2 / 5;
-        c.panel(bx.saturating_sub(6), by.saturating_sub(6), tw + 12, 8 * bscale + 12, 210);
+        let hint = "TAP TO RECONNECT";
+        let hw = hint.len() * 8 * s;
+        let bw = tw.max(hw);
+        c.panel((w - bw) / 2 - 6, by.saturating_sub(6), bw + 12, 8 * bscale + g + 12, 210);
         c.glow_text(bx, by, msg, hud::RED, bscale);
+        c.glow_text(w.saturating_sub(hw) / 2, by + 8 * bscale + s * 2, hint, hud::CYAN, s);
     }
 }
 

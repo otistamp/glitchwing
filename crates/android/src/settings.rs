@@ -16,9 +16,11 @@ pub enum Action {
     TrimReset = 7,
     /// Button that cycles the speed/rate preset (LOW -> MED -> HIGH).
     Speed = 8,
+    /// Held modifier: while down, the D-pad left/right trims yaw instead of roll.
+    YawTrim = 9,
 }
 
-pub const ACTIONS: [Action; 9] = [
+pub const ACTIONS: [Action; 10] = [
     Action::Arm,
     Action::Takeoff,
     Action::Land,
@@ -27,6 +29,7 @@ pub const ACTIONS: [Action; 9] = [
     Action::Headless,
     Action::Emergency,
     Action::TrimReset,
+    Action::YawTrim,
     Action::Speed,
 ];
 
@@ -42,6 +45,7 @@ impl Action {
             Action::Emergency => "KILLSWITCH",
             Action::TrimReset => "TRIM RESET",
             Action::Speed => "SPEED",
+            Action::YawTrim => "YAW TRIM",
         }
     }
 }
@@ -62,7 +66,7 @@ pub fn speed_name(level: u8) -> &'static str {
 /// Action → gamepad keycode (indexed by `Action as usize`), plus config flags.
 #[derive(Clone, Copy)]
 pub struct Bindings {
-    pub keys: [u32; 9],
+    pub keys: [u32; 10],
     /// Throttle from L2/R2 triggers (true) vs the left-stick Y axis (false).
     pub throttle_triggers: bool,
     /// Speed/rate preset: 0 = LOW, 1 = MED, 2 = HIGH.
@@ -71,8 +75,9 @@ pub struct Bindings {
 
 impl Default for Bindings {
     fn default() -> Self {
-        // Start, B, A, Y, X, L1, Select, R1, Mode
-        Bindings { keys: [108, 97, 96, 100, 99, 102, 109, 103, 110], throttle_triggers: false, speed: 1 }
+        // Start, B, A, Y, X, L1, Select, R1, Mode, R2  (indexed by Action; YawTrim
+        // on R2 — a trigger you deliberately hold, not an easily-nudged stick click)
+        Bindings { keys: [108, 97, 96, 100, 99, 102, 109, 103, 110, 105], throttle_triggers: false, speed: 1 }
     }
 }
 
@@ -110,14 +115,19 @@ pub fn load(path: &str) -> Bindings {
     let mut b = Bindings::default();
     if let Ok(s) = fs::read_to_string(path) {
         let nums: Vec<u32> = s.split_whitespace().filter_map(|t| t.parse().ok()).collect();
-        if nums.len() >= 11 {
-            // Current format: 9 keys + throttle flag + speed level.
-            b.keys.copy_from_slice(&nums[..9]);
+        if nums.len() >= 12 {
+            // Current format: 10 keys + throttle flag + speed level.
+            b.keys.copy_from_slice(&nums[..10]);
+            b.throttle_triggers = nums[10] != 0;
+            b.speed = (nums[11] as u8).min(2);
+        } else if nums.len() >= 11 {
+            // Prior format: 9 keys + throttle + speed (YawTrim binding stays default).
+            b.keys[..9].copy_from_slice(&nums[..9]);
             b.throttle_triggers = nums[9] != 0;
             b.speed = (nums[10] as u8).min(2);
         } else if nums.len() >= 8 {
             // Legacy format: 8 keys (+ optional throttle flag). Keep the new Speed
-            // binding and level at their defaults.
+            // and YawTrim bindings + level at their defaults.
             b.keys[..8].copy_from_slice(&nums[..8]);
             b.throttle_triggers = nums.get(8).is_some_and(|&v| v != 0);
         }

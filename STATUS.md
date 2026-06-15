@@ -56,8 +56,12 @@ Android app flew the drone with live video + gamepad control. Confirmed:
 
 - **Link-quality meter** (fps-based bars, green/amber/red) — range warning.
 - **Trim** on the D-pad, **headless** on L1, **trim-reset** on R1; shown in HUD.
-- **Touch RECONNECT** button (shown when disconnected) — the only thing that
-  pops the system WiFi-join dialog; never auto-prompts on signal loss.
+- **Tap the feed to reconnect**: while disconnected, tapping anywhere on the
+  video area pops the system WiFi-join dialog (the LINK LOST banner prompts
+  "TAP TO RECONNECT"). Never auto-prompts on signal loss.
+- **Trim**: D-pad trims roll (L/R) and pitch (U/D); hold the **YAW TRIM** button
+  (default R2) and the D-pad L/R trims yaw. Trim-reset clears all three. Shown
+  on the HUD as `TRM R.. P.. Y..`.
 - **KEY MAP settings** (disarmed): view + remap any action to any button by
   pressing it; persisted to `bindings.txt`. Input is data-driven.
 - **Speed presets** (LOW/MED/HIGH): a bindable SPEED button (default MODE)
@@ -80,7 +84,8 @@ Android app flew the drone with live video + gamepad control. Confirmed:
 
 - More close-range flights; tune the speed-preset deflection values.
 - Verify PHOTO snapshot + VIDEO recording on-device (need a live frame).
-- Remaining stock-app feature not yet ported: yaw trim (we trim roll+pitch only).
+- All stock-app drone functions now ported (flight flags, speed presets, photo,
+  video, 3-axis trim).
 - Possible: confirm a faint doubled-text artifact in the overlay screens is only
   a screenshot/compositor effect, not on-device.
 
