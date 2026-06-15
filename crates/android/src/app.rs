@@ -47,6 +47,10 @@ struct Pad {
     calibrate: bool,
     hx: f32, // D-pad hat X (-1 left / +1 right)
     hy: f32, // D-pad hat Y (-1 up / +1 down)
+    rtrig: f32, // right trigger (analog 0..1)
+    ltrig: f32, // left trigger (analog 0..1)
+    r2: bool, // right trigger as a digital button
+    l2: bool, // left trigger as a digital button
     headless_toggle: bool,
     trim_reset: bool,
     tap: Option<(f32, f32)>, // last touch-down screen coords
@@ -204,6 +208,12 @@ pub fn run(app: AndroidApp) {
             if let Some((tx_, ty_)) = pad.tap.take() {
                 match settings_hit(tx_ as usize, ty_ as usize, win_w, win_h) {
                     Some(SettingsHit::Row(a)) => listening = Some(a),
+                    Some(SettingsHit::ThrottleToggle) => {
+                        bindings.throttle_triggers = !bindings.throttle_triggers;
+                        if let Some(p) = &cfg_path {
+                            settings::save(p, &bindings);
+                        }
+                    }
                     Some(SettingsHit::Reset) => {
                         bindings = settings::Bindings::default();
                         if let Some(p) = &cfg_path {
@@ -233,7 +243,13 @@ pub fn run(app: AndroidApp) {
             roll = apply_trim(shape(dz(pad.rx)), trim_roll);
             pitch = apply_trim(shape(dz(-pad.ry)), trim_pitch);
             yaw = shape(dz(pad.lx));
-            prev_throttle = ramp_toward(prev_throttle, shape(dz(-pad.ly)), THROTTLE_RAMP);
+            // Throttle source: L2/R2 triggers (R2 up, L2 down) or the left-stick Y.
+            let thr_in = if bindings.throttle_triggers {
+                pad.rtrig.max(if pad.r2 { 1.0 } else { 0.0 }) - pad.ltrig.max(if pad.l2 { 1.0 } else { 0.0 })
+            } else {
+                -pad.ly
+            };
+            prev_throttle = ramp_toward(prev_throttle, shape(dz(thr_in)), THROTTLE_RAMP);
             throttle = prev_throttle;
             if pad.takeoff { flags |= FLAG_TAKEOFF; }
             if pad.land { flags |= FLAG_LAND; }
@@ -248,7 +264,8 @@ pub fn run(app: AndroidApp) {
                 if let Some(l) = &link {
                     l.control.disarm();
                 }
-                heading += (yaw as f32 - 128.0) / 128.0 * 0.10;
+                // Yaw inverted in the sim view only (flight control unchanged).
+                heading -= (yaw as f32 - 128.0) / 128.0 * 0.10;
                 // Altitude from takeoff/land/throttle.
                 if pad.takeoff { sim_alt = (sim_alt + 0.03).min(1.0); }
                 if pad.land { sim_alt = (sim_alt - 0.03).max(0.0); }
@@ -526,6 +543,7 @@ fn files_dir() -> Option<String> {
 /// What a tap in the settings overlay hit.
 enum SettingsHit {
     Row(settings::Action),
+    ThrottleToggle,
     Reset,
     Done,
 }
@@ -555,6 +573,11 @@ fn settings_hit(px: usize, py: usize, w: usize, h: usize) -> Option<SettingsHit>
             return Some(SettingsHit::Row(*a));
         }
     }
+    // Throttle-source row (index 8).
+    let ry = settings_row_y(8, h);
+    if px > w / 12 && px < w - w / 12 && py >= ry && py < ry + rh {
+        return Some(SettingsHit::ThrottleToggle);
+    }
     None
 }
 
@@ -574,6 +597,11 @@ fn draw_settings(fb: &mut [u32], w: usize, h: usize, b: &settings::Bindings, lis
         let val = if lit { "PRESS BUTTON".to_string() } else { settings::button_name(b.get(*a)) };
         c.glow_text(w - w / 12 - val.len() * g, ry, &val, col, s);
     }
+    // Throttle-source toggle row.
+    let ry = settings_row_y(8, h) + (rh - g) / 2;
+    c.glow_text(w / 12, ry, "THROTTLE", hud::CYAN, s);
+    let tval = if b.throttle_triggers { "TRIGGERS" } else { "L-STICK Y" };
+    c.glow_text(w - w / 12 - tval.len() * g, ry, tval, hud::AMBER, s);
     // DONE / RESET buttons
     for (rect, label, col) in [(done_btn(w, h), "DONE", hud::GREEN), (reset_btn(w, h), "RESET", hud::AMBER)] {
         let (bx, by, bw, bh) = rect;
@@ -597,6 +625,9 @@ fn handle_input(event: &InputEvent, pad: &mut Pad, b: &settings::Bindings) -> In
                 pad.ry = p.axis_value(Axis::Rz);
                 pad.hx = p.axis_value(Axis::HatX);
                 pad.hy = p.axis_value(Axis::HatY);
+                // Analog triggers (some pads report these on Gas/Brake instead).
+                pad.rtrig = p.axis_value(Axis::Rtrigger).max(p.axis_value(Axis::Gas));
+                pad.ltrig = p.axis_value(Axis::Ltrigger).max(p.axis_value(Axis::Brake));
                 return InputStatus::Handled;
             }
             // Touch: record tap-down screen coords for HUD button hit-testing.
@@ -626,25 +657,28 @@ fn handle_input(event: &InputEvent, pad: &mut Pad, b: &settings::Bindings) -> In
             if kc == b.get(Flip) { pad.flip = down; }
             if kc == b.get(Calibrate) { pad.calibrate = down; }
             if kc == b.get(Emergency) { pad.emergency = down; }
+            if kc == 104 { pad.l2 = down; } // ButtonL2 (digital trigger)
+            if kc == 105 { pad.r2 = down; } // ButtonR2
             InputStatus::Handled
         }
         _ => InputStatus::Unhandled,
     }
 }
 
-/// "KEY MAP" button rect (below the top panel) — opens settings when disarmed.
+/// "KEY MAP" button rect — bottom-center, between the stick boxes (KEY MAP above SIM).
 fn menu_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
     let s = (w / 360).max(2);
-    let panel_bottom = h / 12 + s + (8 * s * 3 + 6 * s);
+    let bs = w / 4; // stick-box size (matches draw_hud)
+    let band_center = (h - h / 18) - 8 * s - bs / 2; // stick-box vertical center
     let bw = w / 4;
     let bh = h / 26;
-    (w / 2 - bw / 2, panel_bottom + h / 60, bw, bh)
+    (w / 2 - bw / 2, band_center - bh - h / 120, bw, bh)
 }
 
 /// "SIM" button rect — opens the virtual-drone preview (disarmed). Below KEY MAP.
 fn sim_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
     let (mx, my, bw, bh) = menu_btn(w, h);
-    (mx, my + bh + h / 60, bw, bh)
+    (mx, my + bh + h / 80, bw, bh)
 }
 
 /// "EXIT" button rect for the preview screen (bottom-center).
@@ -655,9 +689,12 @@ fn exit_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
 /// On-screen reconnect-button rect (x, y, w, h), in native pixels. Shared by the
 /// HUD (to draw) and the loop (to hit-test the tap).
 fn reconnect_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
+    // Just above the stick boxes, clear of the KEY MAP/SIM buttons.
+    let s = (w / 360).max(2);
+    let stick_top = (h - h / 18) - w / 4 - 8 * s;
     let bw = w / 3;
     let bh = h / 22;
-    (w / 2 - bw / 2, h - h / 18 - bh - h / 30, bw, bh)
+    (w / 2 - bw / 2, stick_top - bh - h / 40, bw, bh)
 }
 
 #[allow(clippy::too_many_arguments)]
