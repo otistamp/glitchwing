@@ -919,19 +919,24 @@ fn draw_preview(
 
     // Fuselage corners (computed first so the arms can attach to them): a pointed
     // body whose nose marks the front — no separate orientation marker needed.
+    // Hexagonal body, elongated with a pointed nose and tail. The four side corners
+    // sit on the diagonals (equal |x|,|y|) so each arm is collinear with the
+    // centre->rotor line: the arms read as a single X, but the crossing is hidden
+    // by the body — no lines are drawn inside the fuselage.
+    let cw = arm * 0.24; // corner half-width (= corner depth, keeps it on the diagonal)
     let bp = [
-        project(0.0, arm * 0.66),          // 0 nose
-        project(arm * 0.14, arm * 0.20),   // 1 front-right shoulder
-        project(arm * 0.12, -arm * 0.48),  // 2 rear-right
-        project(-arm * 0.12, -arm * 0.48), // 3 rear-left
-        project(-arm * 0.14, arm * 0.20),  // 4 front-left shoulder
+        project(0.0, arm * 0.62), // 0 nose
+        project(cw, cw),          // 1 front-right
+        project(cw, -cw),         // 2 rear-right
+        project(0.0, -arm * 0.50), // 3 tail
+        project(-cw, -cw),        // 4 rear-left
+        project(-cw, cw),         // 5 front-left
     ];
 
     // Arms + rotors. All one colour at full brightness — the pointed fuselage shows
-    // which way the drone faces. Each arm starts at its fuselage corner (not the
-    // centre) so nothing crosses inside the body.
+    // which way the drone faces. Each arm starts at its fuselage corner.
     let (bright, dim) = (hud::CYAN, 0x0020_6070);
-    let arm_root = [1usize, 4, 3, 2]; // rotor k -> fuselage corner (FR, FL, RL, RR)
+    let arm_root = [1usize, 5, 4, 2]; // rotor k -> fuselage corner (FR, FL, RL, RR)
     for k in 0..4 {
         let a = FRAC_PI_4 + k as f32 * FRAC_PI_2;
         let (rx, ry) = project(a.cos() * arm, a.sin() * arm);
