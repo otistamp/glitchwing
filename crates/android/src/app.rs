@@ -42,7 +42,8 @@ struct Pad {
     emergency: bool,
     estop: bool, // emergency one-shot edge (for the sim kill)
     speed_cycle: bool, // one-shot edge: cycle the speed preset
-    trim_mod: bool, // held: sticks adjust trim instead of flying
+    hx: f32, // D-pad hat X (-1 left / +1 right) — roll trim
+    hy: f32, // D-pad hat Y (-1 up / +1 down) — pitch trim
     takeoff: bool,
     land: bool,
     flip: bool,
@@ -77,9 +78,9 @@ pub fn run(app: AndroidApp) {
     let mut pad = Pad::default();
     let mut armed = false;
     let mut prev_throttle = CENTER;
-    let (mut trim_roll, mut trim_pitch, mut trim_yaw): (i8, i8, i8) = (0, 0, 0);
+    let (mut trim_roll, mut trim_pitch): (i8, i8) = (0, 0);
     let mut headless = false;
-    let (mut prev_trx, mut prev_try, mut prev_tlx) = (0.0f32, 0.0f32, 0.0f32);
+    let (mut prev_hx, mut prev_hy) = (0.0f32, 0.0f32);
     let (mut fps_count, mut shown_fps) = (0u32, 0u32);
     let mut fps_since = Instant::now();
     let mut frame: u64 = 0;
@@ -244,45 +245,28 @@ pub fn run(app: AndroidApp) {
             pad.arm_toggle = false; // discard control one-shots while in settings
             pad.estop = false;
         } else {
-            if pad.headless_toggle { headless = !headless; pad.headless_toggle = false; }
-            if pad.trim_reset { trim_roll = 0; trim_pitch = 0; trim_yaw = 0; pad.trim_reset = false; }
-
-            // Trim: while the TRIM button is held, the sticks adjust trim the same way
-            // they fly — right stick = roll/pitch, left stick X = yaw — one step per
-            // nudge. The drone holds at the trimmed neutral so the correction shows
-            // live; release to resume flying.
+            // D-pad trims roll (left/right) and pitch (up/down), one step per press.
             const TRIM_LIMIT: i8 = 40;
-            const TRIM_TH: f32 = 0.5;
-            if pad.trim_mod {
-                let pry = -pad.ry; // stick-up = forward pitch (matches flight)
-                if pad.rx > TRIM_TH && prev_trx <= TRIM_TH { trim_roll = (trim_roll + 1).min(TRIM_LIMIT); }
-                if pad.rx < -TRIM_TH && prev_trx >= -TRIM_TH { trim_roll = (trim_roll - 1).max(-TRIM_LIMIT); }
-                if pry > TRIM_TH && -prev_try <= TRIM_TH { trim_pitch = (trim_pitch + 1).min(TRIM_LIMIT); }
-                if pry < -TRIM_TH && -prev_try >= -TRIM_TH { trim_pitch = (trim_pitch - 1).max(-TRIM_LIMIT); }
-                if pad.lx > TRIM_TH && prev_tlx <= TRIM_TH { trim_yaw = (trim_yaw + 1).min(TRIM_LIMIT); }
-                if pad.lx < -TRIM_TH && prev_tlx >= -TRIM_TH { trim_yaw = (trim_yaw - 1).max(-TRIM_LIMIT); }
-                // Hover at the trimmed neutral; altitude-hold keeps it in place.
-                roll = apply_trim(CENTER, trim_roll);
-                pitch = apply_trim(CENTER, trim_pitch);
-                yaw = apply_trim(CENTER, trim_yaw);
-                prev_throttle = CENTER;
-                throttle = CENTER;
+            if pad.hx > 0.5 && prev_hx <= 0.5 { trim_roll = (trim_roll + 1).min(TRIM_LIMIT); }
+            if pad.hx < -0.5 && prev_hx >= -0.5 { trim_roll = (trim_roll - 1).max(-TRIM_LIMIT); }
+            if pad.hy < -0.5 && prev_hy >= -0.5 { trim_pitch = (trim_pitch + 1).min(TRIM_LIMIT); }
+            if pad.hy > 0.5 && prev_hy <= 0.5 { trim_pitch = (trim_pitch - 1).max(-TRIM_LIMIT); }
+            prev_hx = pad.hx;
+            prev_hy = pad.hy;
+            if pad.headless_toggle { headless = !headless; pad.headless_toggle = false; }
+            if pad.trim_reset { trim_roll = 0; trim_pitch = 0; pad.trim_reset = false; }
+
+            roll = apply_trim(shape(dz(pad.rx)), trim_roll);
+            pitch = apply_trim(shape(dz(-pad.ry)), trim_pitch);
+            yaw = shape(dz(pad.lx));
+            // Throttle source: L2/R2 triggers (R2 up, L2 down) or the left-stick Y.
+            let thr_in = if bindings.throttle_triggers {
+                pad.rtrig.max(if pad.r2 { 1.0 } else { 0.0 }) - pad.ltrig.max(if pad.l2 { 1.0 } else { 0.0 })
             } else {
-                roll = apply_trim(shape(dz(pad.rx)), trim_roll);
-                pitch = apply_trim(shape(dz(-pad.ry)), trim_pitch);
-                yaw = apply_trim(shape(dz(pad.lx)), trim_yaw);
-                // Throttle source: L2/R2 triggers (R2 up, L2 down) or the left-stick Y.
-                let thr_in = if bindings.throttle_triggers {
-                    pad.rtrig.max(if pad.r2 { 1.0 } else { 0.0 }) - pad.ltrig.max(if pad.l2 { 1.0 } else { 0.0 })
-                } else {
-                    -pad.ly
-                };
-                prev_throttle = ramp_toward(prev_throttle, shape(dz(thr_in)), THROTTLE_RAMP);
-                throttle = prev_throttle;
-            }
-            prev_trx = pad.rx;
-            prev_try = pad.ry;
-            prev_tlx = pad.lx;
+                -pad.ly
+            };
+            prev_throttle = ramp_toward(prev_throttle, shape(dz(thr_in)), THROTTLE_RAMP);
+            throttle = prev_throttle;
 
             if pad.takeoff { flags |= FLAG_TAKEOFF; }
             if pad.land { flags |= FLAG_LAND; }
@@ -462,7 +446,7 @@ pub fn run(app: AndroidApp) {
                     .filter(|(_, t)| t.elapsed() < Duration::from_millis(1500))
                     .map(|(m, _)| m.as_str());
                 let rec_secs = rec_start.map(|t| t.elapsed().as_secs());
-                draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, trim_yaw, headless, bindings.speed, note, rec_secs, pad.trim_mod);
+                draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless, bindings.speed, note, rec_secs);
                 // Camera flash: white out the frame briefly right after a capture.
                 if snap_note.as_ref().is_some_and(|(_, t)| t.elapsed() < Duration::from_millis(80)) {
                     for px in fb.iter_mut() {
@@ -780,6 +764,8 @@ fn handle_input(event: &InputEvent, pad: &mut Pad, b: &settings::Bindings) -> In
                 pad.ly = p.axis_value(Axis::Y);
                 pad.rx = p.axis_value(Axis::Z);
                 pad.ry = p.axis_value(Axis::Rz);
+                pad.hx = p.axis_value(Axis::HatX);
+                pad.hy = p.axis_value(Axis::HatY);
                 // Analog triggers (some pads report these on Gas/Brake instead).
                 pad.rtrig = p.axis_value(Axis::Rtrigger).max(p.axis_value(Axis::Gas));
                 pad.ltrig = p.axis_value(Axis::Ltrigger).max(p.axis_value(Axis::Brake));
@@ -814,9 +800,8 @@ fn handle_input(event: &InputEvent, pad: &mut Pad, b: &settings::Bindings) -> In
             if kc == b.get(Emergency) { pad.emergency = down; }
             if kc == b.get(Emergency) && edge { pad.estop = true; }
             if kc == b.get(Speed) && edge { pad.speed_cycle = true; }
-            if kc == b.get(Trim) { pad.trim_mod = down; }
-            if kc == 104 { pad.l2 = down; } // ButtonL2 (digital trigger)
-            if kc == 105 { pad.r2 = down; } // ButtonR2
+            if kc == 104 { pad.l2 = down; } // ButtonL2 (digital trigger / yaw-trim left)
+            if kc == 105 { pad.r2 = down; } // ButtonR2 (digital trigger / yaw-trim right)
             InputStatus::Handled
         }
         _ => InputStatus::Unhandled,
@@ -881,12 +866,10 @@ fn draw_hud(
     frame: u64,
     trim_roll: i8,
     trim_pitch: i8,
-    trim_yaw: i8,
     headless: bool,
     speed: u8,
     snap_note: Option<&str>,
     rec_secs: Option<u64>,
-    trimming: bool,
 ) {
     let mut c = hud::Canvas { buf: fb, w, h };
     let s = (w / 360).max(2); // font scale: crisp at native res
@@ -922,21 +905,10 @@ fn draw_hud(
 
     // trim + headless row
     let row2 = y0 + 2 * s + 2 * g;
-    c.glow_text(tx, row2, &format!("TRM R{trim_roll:+03} P{trim_pitch:+03} Y{trim_yaw:+03}"), hud::CYAN, s);
-    c.glow_text(tx + 19 * g, row2, &format!("SPD {}", settings::speed_name(speed)), hud::CYAN, s);
+    c.glow_text(tx, row2, &format!("TRM R{trim_roll:+03} P{trim_pitch:+03}"), hud::CYAN, s);
+    c.glow_text(tx + 14 * g, row2, &format!("SPD {}", settings::speed_name(speed)), hud::CYAN, s);
     if headless {
         c.glow_text(x1 - 9 * g, row2, "HEADLESS", hud::MAGENTA, s);
-    }
-
-    // TRIM MODE banner — flight is paused (drone hovers) while adjusting trim.
-    if trimming {
-        let bscale = s + 1;
-        let msg = "TRIM MODE";
-        let tw = msg.len() * 8 * bscale;
-        let bx = w.saturating_sub(tw) / 2;
-        let by = y0 + ph + g;
-        c.panel(bx.saturating_sub(6), by.saturating_sub(6), tw + 12, 8 * bscale + 12, 200);
-        c.glow_text(bx, by, msg, hud::MAGENTA, bscale);
     }
 
     // KEY MAP + SIM buttons (disarmed only).

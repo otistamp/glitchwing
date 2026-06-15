@@ -59,11 +59,10 @@ Android app flew the drone with live video + gamepad control. Confirmed:
 - **Tap the feed to reconnect**: while disconnected, tapping anywhere on the
   video area pops the system WiFi-join dialog (the LINK LOST banner prompts
   "TAP TO RECONNECT"). Never auto-prompts on signal loss.
-- **Trim** (3-axis): hold the **TRIM** button (default R2) and the sticks adjust
-  trim the same way they fly — right stick = roll/pitch, left stick L/R = yaw,
-  one step per nudge. The drone hovers at the trimmed neutral while held (a
-  "TRIM MODE" banner shows); release to fly. Trim-reset clears all three; HUD
-  shows `TRM R.. P.. Y..`.
+- **Trim**: the D-pad trims roll (L/R) and pitch (U/D), one step per press, live
+  while flying. Trim-reset clears both; HUD shows `TRM R.. P..`. (Yaw trim is
+  intentionally omitted — three axes don't fit the D-pad's two, and yaw drift is
+  rare; revisit if needed.)
 - **KEY MAP settings** (disarmed): view + remap any action to any button by
   pressing it; persisted to `bindings.txt`. Input is data-driven.
 - **Speed presets** (LOW/MED/HIGH): a bindable SPEED button (default MODE)
@@ -86,8 +85,8 @@ Android app flew the drone with live video + gamepad control. Confirmed:
 
 - More close-range flights; tune the speed-preset deflection values.
 - Verify PHOTO snapshot + VIDEO recording on-device (need a live frame).
-- All stock-app drone functions now ported (flight flags, speed presets, photo,
-  video, 3-axis trim).
+- All stock-app drone functions ported (flight flags, speed presets, photo,
+  video, roll/pitch trim). Yaw trim deliberately skipped (see Trim above).
 - Possible: confirm a faint doubled-text artifact in the overlay screens is only
   a screenshot/compositor effect, not on-device.
 
