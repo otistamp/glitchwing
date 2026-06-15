@@ -93,6 +93,7 @@ pub fn run(app: AndroidApp) {
     let mut preview_open = false;
     let mut heading = 0.0f32; // virtual-drone yaw (sim)
     let mut sim_alt = 0.0f32; // sim altitude 0..~1.2
+    let mut sim_alt_target: Option<f32> = None; // active takeoff/land glide target
     let mut sim_flip = 0.0f32; // flip progress 1->0 while animating
     let mut sim_prev_flip = false;
     let mut sim_prev_takeoff = false;
@@ -268,14 +269,26 @@ pub fn run(app: AndroidApp) {
                 }
                 // Yaw inverted in the sim view only (flight control unchanged).
                 heading -= (yaw as f32 - 128.0) / 128.0 * 0.10;
-                // Takeoff (edge): if grounded, jump to 25% altitude. Land (edge):
-                // if airborne, drop straight to the ground. Like the real commands.
-                if pad.takeoff && !sim_prev_takeoff && sim_alt <= 0.01 { sim_alt = 0.25; }
+                // Takeoff (edge): if grounded, glide up to 25% altitude. Land (edge):
+                // if airborne, glide down to the ground. Like the real commands.
+                if pad.takeoff && !sim_prev_takeoff && sim_alt <= 0.01 { sim_alt_target = Some(0.25); }
                 sim_prev_takeoff = pad.takeoff;
-                if pad.land && !sim_prev_land && sim_alt > 0.01 { sim_alt = 0.0; }
+                if pad.land && !sim_prev_land && sim_alt > 0.01 { sim_alt_target = Some(0.0); }
                 sim_prev_land = pad.land;
-                // Throttle fine-tunes altitude around that.
-                sim_alt = (sim_alt + (throttle as f32 - 128.0) / 128.0 * 0.02).clamp(0.0, 1.2);
+                // Throttle fine-tunes altitude; using it cancels any glide.
+                let thr_def = (throttle as f32 - 128.0) / 128.0;
+                if thr_def.abs() > 0.1 { sim_alt_target = None; }
+                // Ease toward an active takeoff/land target.
+                if let Some(t) = sim_alt_target {
+                    let step = 0.012;
+                    if (sim_alt - t).abs() <= step {
+                        sim_alt = t;
+                        sim_alt_target = None;
+                    } else {
+                        sim_alt += step.copysign(t - sim_alt);
+                    }
+                }
+                sim_alt = (sim_alt + thr_def * 0.02).clamp(0.0, 1.2);
                 // Flip: a 360° barrel roll on the press edge.
                 if pad.flip && !sim_prev_flip {
                     sim_flip = 1.0;
