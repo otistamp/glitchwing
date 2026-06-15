@@ -106,6 +106,7 @@ pub fn run(app: AndroidApp) {
     let mut sim_killed = false; // emergency motor cut active
     let mut sim_flip = 0.0f32; // flip progress 1->0 while animating
     let mut sim_prev_flip = false;
+    let (mut sim_flip_rc, mut sim_flip_pc) = (1.0f32, 0.0f32); // flip axis: roll/pitch components
     let mut sim_prev_takeoff = false;
     let mut sim_prev_land = false;
 
@@ -315,9 +316,21 @@ pub fn run(app: AndroidApp) {
                     }
                     sim_alt = (sim_alt + thr_def * 0.02).clamp(0.0, 1.2);
                 }
-                // Flip: a 360° barrel roll on the press edge.
+                // Flip on the press edge, aimed by the right stick: push right/left
+                // for a roll flip, forward/back for a pitch flip (centered = roll right).
                 if pad.flip && !sim_prev_flip {
                     sim_flip = 1.0;
+                    let (dx, dy) = (pad.rx, -pad.ry);
+                    if dx.abs() < 0.25 && dy.abs() < 0.25 {
+                        sim_flip_rc = 1.0;
+                        sim_flip_pc = 0.0;
+                    } else if dx.abs() >= dy.abs() {
+                        sim_flip_rc = dx.signum();
+                        sim_flip_pc = 0.0;
+                    } else {
+                        sim_flip_rc = 0.0;
+                        sim_flip_pc = dy.signum();
+                    }
                 }
                 sim_prev_flip = pad.flip;
                 if sim_flip > 0.0 {
@@ -439,7 +452,8 @@ pub fn run(app: AndroidApp) {
                 draw_settings(&mut fb, win_w, win_h, &bindings, listening);
             } else if preview_open {
                 let flip_angle = if sim_flip > 0.0 { (1.0 - sim_flip) * std::f32::consts::TAU } else { 0.0 };
-                draw_preview(&mut fb, win_w, win_h, roll, pitch, yaw, throttle, &pad, heading, sim_alt, flip_angle, sim_spin, sim_killed);
+                let (flip_roll, flip_pitch) = (flip_angle * sim_flip_rc, flip_angle * sim_flip_pc);
+                draw_preview(&mut fb, win_w, win_h, roll, pitch, yaw, throttle, &pad, heading, sim_alt, flip_roll, flip_pitch, sim_spin, sim_killed);
             } else {
                 let note = snap_note
                     .as_ref()
@@ -995,7 +1009,8 @@ fn draw_preview(
     pad: &Pad,
     heading: f32,
     alt: f32,
-    flip_angle: f32,
+    flip_roll: f32,
+    flip_pitch: f32,
     spin: f32,
     killed: bool,
 ) {
@@ -1012,7 +1027,7 @@ fn draw_preview(
     for (lbl, on, col) in [
         ("TAKEOFF", pad.takeoff, hud::GREEN),
         ("LAND", pad.land, hud::AMBER),
-        ("FLIP", pad.flip || flip_angle > 0.05, hud::MAGENTA),
+        ("FLIP", pad.flip || flip_roll.abs() + flip_pitch.abs() > 0.05, hud::MAGENTA),
         ("CALIB", pad.calibrate, hud::CYAN),
         ("KILLSWITCH", killed, hud::RED),
     ] {
@@ -1022,7 +1037,7 @@ fn draw_preview(
 
     // Rotors spin while flying (alt/takeoff/flip), static when shut off or killed.
     // With the motors off the drone can't manoeuvre: ignore roll/pitch (stays level).
-    let motors_on = !killed && (alt > 0.02 || pad.takeoff || flip_angle > 0.05);
+    let motors_on = !killed && (alt > 0.02 || pad.takeoff || flip_roll.abs() + flip_pitch.abs() > 0.05);
     let (roll, pitch) = if motors_on { (roll, pitch) } else { (128u8, 128u8) };
 
     // Behind/above pseudo-3D: roll about forward (Y), pitch about side (X), yaw about up (Z).
@@ -1031,9 +1046,9 @@ fn draw_preview(
     let drone_y = ground - alt * h as f32 * 0.30;
     let arm = w as f32 / 4.0;
     let rotor = ((5.0 + (throttle as f32 / 255.0) * 12.0) * s as f32) as i32;
-    let (sr, cr) = ((roll as f32 - 128.0) / 128.0 * 0.6 + flip_angle).sin_cos();
+    let (sr, cr) = ((roll as f32 - 128.0) / 128.0 * 0.6 + flip_roll).sin_cos();
     // Pitch tilt inverted in the sim view only (flight control unchanged).
-    let (sp, cp) = (-(pitch as f32 - 128.0) / 128.0 * 0.6).sin_cos();
+    let (sp, cp) = (-(pitch as f32 - 128.0) / 128.0 * 0.6 + flip_pitch).sin_cos();
     let (yh_s, yh_c) = heading.sin_cos();
     let (scam, ccam) = 0.5f32.sin_cos(); // camera look-down
     let project = |bx: f32, by: f32| -> (i32, i32) {

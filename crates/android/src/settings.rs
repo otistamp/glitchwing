@@ -71,8 +71,9 @@ pub struct Bindings {
 
 impl Default for Bindings {
     fn default() -> Self {
-        // Start, B, A, Y, X, L1, Select, R1, Mode  (indexed by Action)
-        Bindings { keys: [108, 97, 96, 100, 99, 102, 109, 103, 110], throttle_triggers: false, speed: 1 }
+        // Start, B, A, R-stick, X, L1, Select, R1, Mode  (indexed by Action; Flip on
+        // the right-stick click — push the stick to aim the flip, then press it in)
+        Bindings { keys: [108, 97, 96, 107, 99, 102, 109, 103, 110], throttle_triggers: false, speed: 1 }
     }
 }
 
