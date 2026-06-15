@@ -16,8 +16,8 @@ pub enum Action {
     TrimReset = 7,
     /// Button that cycles the speed/rate preset (LOW -> MED -> HIGH).
     Speed = 8,
-    /// Held modifier: while down, the D-pad left/right trims yaw instead of roll.
-    YawTrim = 9,
+    /// Held modifier: while down, the sticks adjust trim instead of flying.
+    Trim = 9,
 }
 
 pub const ACTIONS: [Action; 10] = [
@@ -29,7 +29,7 @@ pub const ACTIONS: [Action; 10] = [
     Action::Headless,
     Action::Emergency,
     Action::TrimReset,
-    Action::YawTrim,
+    Action::Trim,
     Action::Speed,
 ];
 
@@ -45,7 +45,7 @@ impl Action {
             Action::Emergency => "KILLSWITCH",
             Action::TrimReset => "TRIM RESET",
             Action::Speed => "SPEED",
-            Action::YawTrim => "YAW TRIM",
+            Action::Trim => "TRIM",
         }
     }
 }
@@ -75,7 +75,7 @@ pub struct Bindings {
 
 impl Default for Bindings {
     fn default() -> Self {
-        // Start, B, A, Y, X, L1, Select, R1, Mode, R2  (indexed by Action; YawTrim
+        // Start, B, A, Y, X, L1, Select, R1, Mode, R2  (indexed by Action; TRIM
         // on R2 — a trigger you deliberately hold, not an easily-nudged stick click)
         Bindings { keys: [108, 97, 96, 100, 99, 102, 109, 103, 110, 105], throttle_triggers: false, speed: 1 }
     }
@@ -121,7 +121,7 @@ pub fn load(path: &str) -> Bindings {
             b.throttle_triggers = nums[10] != 0;
             b.speed = (nums[11] as u8).min(2);
         } else if nums.len() >= 11 {
-            // Prior format: 9 keys + throttle + speed (YawTrim binding stays default).
+            // Prior format: 9 keys + throttle + speed (Trim binding stays default).
             b.keys[..9].copy_from_slice(&nums[..9]);
             b.throttle_triggers = nums[9] != 0;
             b.speed = (nums[10] as u8).min(2);

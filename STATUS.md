@@ -59,9 +59,11 @@ Android app flew the drone with live video + gamepad control. Confirmed:
 - **Tap the feed to reconnect**: while disconnected, tapping anywhere on the
   video area pops the system WiFi-join dialog (the LINK LOST banner prompts
   "TAP TO RECONNECT"). Never auto-prompts on signal loss.
-- **Trim**: D-pad trims roll (L/R) and pitch (U/D); hold the **YAW TRIM** button
-  (default R2) and the D-pad L/R trims yaw. Trim-reset clears all three. Shown
-  on the HUD as `TRM R.. P.. Y..`.
+- **Trim** (3-axis): hold the **TRIM** button (default R2) and the sticks adjust
+  trim the same way they fly — right stick = roll/pitch, left stick L/R = yaw,
+  one step per nudge. The drone hovers at the trimmed neutral while held (a
+  "TRIM MODE" banner shows); release to fly. Trim-reset clears all three; HUD
+  shows `TRM R.. P.. Y..`.
 - **KEY MAP settings** (disarmed): view + remap any action to any button by
   pressing it; persisted to `bindings.txt`. Input is data-driven.
 - **Speed presets** (LOW/MED/HIGH): a bindable SPEED button (default MODE)
