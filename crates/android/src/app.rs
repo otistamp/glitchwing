@@ -75,8 +75,6 @@ pub fn run(app: AndroidApp) {
     let mut link: Option<DroneLink> = None;
     let mut last_frame: Option<Instant> = None;
     let mut last_attempt: Option<Instant> = None;
-    let mut wifi_requested = false; // one-shot WifiNetworkSpecifier request
-    let mut perm_requested = false; // one-shot NEARBY_WIFI_DEVICES request
     let mut pad = Pad::default();
     let mut armed = false;
     let mut prev_throttle = CENTER;
@@ -86,7 +84,6 @@ pub fn run(app: AndroidApp) {
     let (mut fps_count, mut shown_fps) = (0u32, 0u32);
     let mut fps_since = Instant::now();
     let mut frame: u64 = 0;
-    let app_start = Instant::now();
     let cfg_path = files_dir().map(|d| format!("{d}/bindings.txt"));
     let mut bindings = cfg_path.as_deref().map(settings::load).unwrap_or_default();
     let mut settings_open = false;
@@ -136,29 +133,15 @@ pub fn run(app: AndroidApp) {
         }
         frame += 1;
 
-        // Connection watchdog: (re)bind to wifi + (re)start the link when no video
-        // is arriving. NEVER while armed — don't disrupt a flight.
+        // Connection watchdog: silently (re)bind to wifi + (re)start the link when
+        // no video is arriving. NEVER while armed — don't disrupt a flight. This does
+        // NOT pop the system wifi-join dialog: it only recovers when we're already on
+        // the drone AP. Joining a lost/absent AP is done solely by tapping RECONNECT,
+        // so shutting the drone off (e.g. to use the sim) never prompts.
         let stale = last_frame.map_or(true, |t| t.elapsed() > Duration::from_secs(3));
         let ready = last_attempt.map_or(true, |t| t.elapsed() > Duration::from_secs(2));
         if !armed && stale && ready {
             last_attempt = Some(Instant::now());
-            // First time we're disconnected, ask the system to join the drone AP.
-            // The WifiNetworkSpecifier scan needs NEARBY_WIFI_DEVICES; we can't
-            // request it in-app (ndk_context gives the Application, not the Activity,
-            // and runtime-permission UI needs the Activity/UI thread), so it must be
-            // granted once in Settings. (If already on the drone wifi manually we're
-            // not stale, so this never fires.)
-            if nearby_wifi_granted() {
-                // Grace period: if we're already on the drone wifi, video arrives
-                // within a couple seconds (not stale) and we never prompt.
-                if !wifi_requested && app_start.elapsed() > Duration::from_secs(4) {
-                    wifi_requested = true;
-                    request_drone_wifi();
-                }
-            } else if !perm_requested {
-                perm_requested = true;
-                log::warn!("NEARBY_WIFI_DEVICES not granted — enable it in Settings to auto-join the drone wifi");
-            }
             if bind_to_wifi() {
                 if let Some(old) = link.take() {
                     old.stop();
@@ -359,8 +342,16 @@ pub fn run(app: AndroidApp) {
                         sim_flip = 0.0;
                         heading = 0.0;
                     } else if !connected && inside(reconnect_btn(win_w, win_h)) {
-                        wifi_requested = false;
-                        last_attempt = None;
+                        // Explicit user action: ask the system to join the drone AP.
+                        // The WifiNetworkSpecifier scan needs NEARBY_WIFI_DEVICES,
+                        // granted once in Settings (can't be requested from a pure
+                        // NativeActivity).
+                        if nearby_wifi_granted() {
+                            request_drone_wifi();
+                        } else {
+                            log::warn!("NEARBY_WIFI_DEVICES not granted — enable it in Settings to join the drone wifi");
+                        }
+                        last_attempt = None; // let the watchdog rebind+restart promptly
                     }
                 }
             }

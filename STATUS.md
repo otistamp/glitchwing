@@ -38,8 +38,11 @@ Android app flew the drone with live video + gamepad control. Confirmed:
   B=takeoff, A=land, X=calibrate, Y=flip, Select/Mode=EMERGENCY.
 - WiFi-bind (works with cellular on), self-healing watchdog (re-binds when
   disarmed), keep-screen-on, LINK-LOST warning, crisp native-res HUD.
-- **Auto-connect** to the drone AP via `WifiNetworkSpecifier` (SSID prefix
-  `WIFI_8K__`) when disconnected — one-time system Connect dialog.
+- **Tap RECONNECT to join** the drone AP via `WifiNetworkSpecifier` (SSID prefix
+  `WIFI_8K__`) — shows the one-time system Connect dialog. The join is tap-only:
+  the watchdog silently re-binds/restarts the link when already on the AP but
+  never prompts on its own, so shutting the drone off (e.g. to use the sim)
+  doesn't pop the WiFi menu.
 - **Maiden flight ended by WiFi range (RSSI -84) — a hardware limit. Fly close.**
 
 ### One-time setup on a fresh install
@@ -53,13 +56,13 @@ Android app flew the drone with live video + gamepad control. Confirmed:
 
 - **Link-quality meter** (fps-based bars, green/amber/red) — range warning.
 - **Trim** on the D-pad, **headless** on L1, **trim-reset** on R1; shown in HUD.
-- **Touch RECONNECT** button (shown when disconnected).
-- **Skip connect dialog** when already on the drone wifi (grace period).
+- **Touch RECONNECT** button (shown when disconnected) — the only thing that
+  pops the system WiFi-join dialog; never auto-prompts on signal loss.
 - **KEY MAP settings** (disarmed): view + remap any action to any button by
   pressing it; persisted to `bindings.txt`. Input is data-driven.
 - **SIM** (disarmed): fly a neon wireframe virtual drone with your mappings to
   preview/practice — nothing sent to the real drone.
-- One-time setup unchanged: grant NEARBY_WIFI_DEVICES for auto-connect scan.
+- One-time setup unchanged: grant NEARBY_WIFI_DEVICES for the RECONNECT scan.
 
 ## Next
 
