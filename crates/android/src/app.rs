@@ -14,8 +14,8 @@ use jni::objects::{JObject, JObjectArray, JValue};
 use ndk::{hardware_buffer_format::HardwareBufferFormat, native_window::NativeWindow};
 use net::{DroneLink, LinkConfig};
 use protocol::{
-    axis_to_byte, expo, ramp_toward, ControlState, CENTER, FLAG_CALIBRATE, FLAG_EMERGENCY,
-    FLAG_FLIP, FLAG_LAND, FLAG_TAKEOFF,
+    apply_trim, axis_to_byte, expo, ramp_toward, ControlState, CENTER, FLAG_CALIBRATE,
+    FLAG_EMERGENCY, FLAG_FLIP, FLAG_HEADLESS, FLAG_LAND, FLAG_TAKEOFF,
 };
 use zune_jpeg::JpegDecoder;
 
@@ -42,6 +42,10 @@ struct Pad {
     land: bool,
     flip: bool,
     calibrate: bool,
+    hx: f32, // D-pad hat X (-1 left / +1 right)
+    hy: f32, // D-pad hat Y (-1 up / +1 down)
+    headless_toggle: bool,
+    trim_reset: bool,
 }
 
 pub fn run(app: AndroidApp) {
@@ -66,6 +70,9 @@ pub fn run(app: AndroidApp) {
     let mut pad = Pad::default();
     let mut armed = false;
     let mut prev_throttle = CENTER;
+    let (mut trim_roll, mut trim_pitch): (i8, i8) = (0, 0);
+    let mut headless = false;
+    let (mut prev_hx, mut prev_hy) = (0.0f32, 0.0f32);
     let (mut fps_count, mut shown_fps) = (0u32, 0u32);
     let mut fps_since = Instant::now();
     let mut frame: u64 = 0;
@@ -146,10 +153,28 @@ pub fn run(app: AndroidApp) {
             while iter.next(|e| handle_input(e, &mut pad)) {}
         }
 
+        // D-pad trim (edge-triggered ±1 per press), L1 headless toggle, R1 reset trim.
+        const TRIM_LIMIT: i8 = 40;
+        if pad.hx > 0.5 && prev_hx <= 0.5 { trim_roll = (trim_roll + 1).min(TRIM_LIMIT); }
+        if pad.hx < -0.5 && prev_hx >= -0.5 { trim_roll = (trim_roll - 1).max(-TRIM_LIMIT); }
+        if pad.hy < -0.5 && prev_hy >= -0.5 { trim_pitch = (trim_pitch + 1).min(TRIM_LIMIT); }
+        if pad.hy > 0.5 && prev_hy <= 0.5 { trim_pitch = (trim_pitch - 1).max(-TRIM_LIMIT); }
+        prev_hx = pad.hx;
+        prev_hy = pad.hy;
+        if pad.headless_toggle {
+            headless = !headless;
+            pad.headless_toggle = false;
+        }
+        if pad.trim_reset {
+            trim_roll = 0;
+            trim_pitch = 0;
+            pad.trim_reset = false;
+        }
+
         let dz = |v: f32| if v.abs() > DEADZONE { v } else { 0.0 };
         let shape = |raw: f32| axis_to_byte(expo(raw, EXPO) * MAX_DEFLECTION);
-        let roll = shape(dz(pad.rx));
-        let pitch = shape(dz(-pad.ry));
+        let roll = apply_trim(shape(dz(pad.rx)), trim_roll);
+        let pitch = apply_trim(shape(dz(-pad.ry)), trim_pitch);
         let yaw = shape(dz(pad.lx));
         prev_throttle = ramp_toward(prev_throttle, shape(dz(-pad.ly)), THROTTLE_RAMP);
         let throttle = prev_throttle;
@@ -158,6 +183,7 @@ pub fn run(app: AndroidApp) {
         if pad.land { flags |= FLAG_LAND; }
         if pad.flip { flags |= FLAG_FLIP; }
         if pad.calibrate { flags |= FLAG_CALIBRATE; }
+        if headless { flags |= FLAG_HEADLESS; }
         if pad.emergency { flags |= FLAG_EMERGENCY; armed = false; }
 
         if let Some(l) = &link {
@@ -193,7 +219,7 @@ pub fn run(app: AndroidApp) {
             }
             scale_video(&mut fb, win_w, win_h, &vid);
             let connected = last_frame.map_or(false, |t| t.elapsed() < Duration::from_secs(2));
-            draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame);
+            draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless);
             if let Some(nw) = &window {
                 blit(nw, &fb, win_w, win_h);
             }
@@ -386,6 +412,8 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
                 pad.ly = p.axis_value(Axis::Y);
                 pad.rx = p.axis_value(Axis::Z);
                 pad.ry = p.axis_value(Axis::Rz);
+                pad.hx = p.axis_value(Axis::HatX);
+                pad.hy = p.axis_value(Axis::HatY);
                 return InputStatus::Handled;
             }
             InputStatus::Unhandled
@@ -404,6 +432,16 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
                 Keycode::ButtonB => pad.takeoff = down,
                 Keycode::ButtonY => pad.flip = down,
                 Keycode::ButtonX => pad.calibrate = down,
+                Keycode::ButtonL1 => {
+                    if down && k.repeat_count() == 0 {
+                        pad.headless_toggle = true;
+                    }
+                }
+                Keycode::ButtonR1 => {
+                    if down && k.repeat_count() == 0 {
+                        pad.trim_reset = true;
+                    }
+                }
                 _ => {}
             }
             InputStatus::Handled
@@ -425,6 +463,9 @@ fn draw_hud(
     roll: u8,
     pitch: u8,
     frame: u64,
+    trim_roll: i8,
+    trim_pitch: i8,
+    headless: bool,
 ) {
     let mut c = hud::Canvas { buf: fb, w, h };
     let s = (w / 360).max(2); // font scale: crisp at native res
@@ -436,7 +477,7 @@ fn draw_hud(
     let (x0, y0, x1, y1) = (mx, top, w - mx, h - bot);
 
     // top status panel
-    let ph = g * 2 + 6 * s;
+    let ph = g * 3 + 6 * s;
     c.panel(x0 + s, y0 + s, x1 - x0 - 2 * s, ph, 170);
     let tx = x0 + 2 * s;
     let row0 = y0 + 2 * s;
@@ -457,6 +498,13 @@ fn draw_hud(
     c.glow_text(tx, y0 + 2 * s + g, "THR", hud::CYAN, s);
     let bar_x = tx + 4 * g;
     c.bar(bar_x, y0 + 2 * s + g, x1 - bar_x - 2 * s, g - 2 * s, throttle as f32 / 255.0, if armed { hud::GREEN } else { hud::AMBER });
+
+    // trim + headless row
+    let row2 = y0 + 2 * s + 2 * g;
+    c.glow_text(tx, row2, &format!("TRM R{trim_roll:+03} P{trim_pitch:+03}"), hud::CYAN, s);
+    if headless {
+        c.glow_text(x1 - 9 * g, row2, "HEADLESS", hud::MAGENTA, s);
+    }
 
     // stick boxes near the bottom safe corners
     let bs = w / 4;
