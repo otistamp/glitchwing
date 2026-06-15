@@ -12,6 +12,8 @@
 
 #[cfg(target_os = "android")]
 mod app;
+#[cfg(target_os = "android")]
+mod settings;
 
 #[cfg(target_os = "android")]
 #[no_mangle]

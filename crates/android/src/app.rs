@@ -8,7 +8,7 @@
 use std::mem::MaybeUninit;
 use std::time::{Duration, Instant};
 
-use android_activity::input::{Axis, InputEvent, KeyAction, Keycode, MotionAction};
+use android_activity::input::{Axis, InputEvent, KeyAction, MotionAction};
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent, WindowManagerFlags};
 use jni::objects::{JObject, JObjectArray, JValue};
 use ndk::{hardware_buffer_format::HardwareBufferFormat, native_window::NativeWindow};
@@ -18,6 +18,8 @@ use protocol::{
     FLAG_EMERGENCY, FLAG_FLIP, FLAG_HEADLESS, FLAG_LAND, FLAG_TAKEOFF,
 };
 use zune_jpeg::JpegDecoder;
+
+use crate::settings;
 
 const VIDEO_W: usize = 240;
 const VIDEO_H: usize = 320;
@@ -48,6 +50,7 @@ struct Pad {
     headless_toggle: bool,
     trim_reset: bool,
     tap: Option<(f32, f32)>, // last touch-down screen coords
+    captured_key: Option<u32>, // last gamepad keycode down (for remapping)
 }
 
 pub fn run(app: AndroidApp) {
@@ -79,6 +82,10 @@ pub fn run(app: AndroidApp) {
     let mut fps_since = Instant::now();
     let mut frame: u64 = 0;
     let app_start = Instant::now();
+    let cfg_path = files_dir().map(|d| format!("{d}/bindings.txt"));
+    let mut bindings = cfg_path.as_deref().map(settings::load).unwrap_or_default();
+    let mut settings_open = false;
+    let mut listening: Option<settings::Action> = None;
 
     while !quit {
         let mut got_window = false;
@@ -152,50 +159,11 @@ pub fn run(app: AndroidApp) {
         }
 
         if let Ok(mut iter) = app.input_events_iter() {
-            while iter.next(|e| handle_input(e, &mut pad)) {}
+            while iter.next(|e| handle_input(e, &mut pad, &bindings)) {}
         }
 
-        // D-pad trim (edge-triggered ±1 per press), L1 headless toggle, R1 reset trim.
-        const TRIM_LIMIT: i8 = 40;
-        if pad.hx > 0.5 && prev_hx <= 0.5 { trim_roll = (trim_roll + 1).min(TRIM_LIMIT); }
-        if pad.hx < -0.5 && prev_hx >= -0.5 { trim_roll = (trim_roll - 1).max(-TRIM_LIMIT); }
-        if pad.hy < -0.5 && prev_hy >= -0.5 { trim_pitch = (trim_pitch + 1).min(TRIM_LIMIT); }
-        if pad.hy > 0.5 && prev_hy <= 0.5 { trim_pitch = (trim_pitch - 1).max(-TRIM_LIMIT); }
-        prev_hx = pad.hx;
-        prev_hy = pad.hy;
-        if pad.headless_toggle {
-            headless = !headless;
-            pad.headless_toggle = false;
-        }
-        if pad.trim_reset {
-            trim_roll = 0;
-            trim_pitch = 0;
-            pad.trim_reset = false;
-        }
-
-        let dz = |v: f32| if v.abs() > DEADZONE { v } else { 0.0 };
-        let shape = |raw: f32| axis_to_byte(expo(raw, EXPO) * MAX_DEFLECTION);
-        let roll = apply_trim(shape(dz(pad.rx)), trim_roll);
-        let pitch = apply_trim(shape(dz(-pad.ry)), trim_pitch);
-        let yaw = shape(dz(pad.lx));
-        prev_throttle = ramp_toward(prev_throttle, shape(dz(-pad.ly)), THROTTLE_RAMP);
-        let throttle = prev_throttle;
-        let mut flags = 0u8;
-        if pad.takeoff { flags |= FLAG_TAKEOFF; }
-        if pad.land { flags |= FLAG_LAND; }
-        if pad.flip { flags |= FLAG_FLIP; }
-        if pad.calibrate { flags |= FLAG_CALIBRATE; }
-        if headless { flags |= FLAG_HEADLESS; }
-        if pad.emergency { flags |= FLAG_EMERGENCY; armed = false; }
-
+        // Receive video always, so the feed stays live behind the settings overlay.
         if let Some(l) = &link {
-            if pad.arm_toggle {
-                armed = !armed;
-                if armed { l.control.arm(); prev_throttle = CENTER; } else { l.control.disarm(); }
-            }
-            if pad.emergency { l.control.arm(); }
-            l.control.set(ControlState { roll, pitch, throttle, yaw, flags });
-            if !armed && !pad.emergency { l.control.disarm(); }
             let mut latest = None;
             while let Ok(f) = l.frames.try_recv() {
                 latest = Some(f);
@@ -207,7 +175,93 @@ pub fn run(app: AndroidApp) {
                 }
             }
         }
-        pad.arm_toggle = false;
+        let connected = last_frame.map_or(false, |t| t.elapsed() < Duration::from_secs(2));
+
+        let dz = |v: f32| if v.abs() > DEADZONE { v } else { 0.0 };
+        let shape = |raw: f32| axis_to_byte(expo(raw, EXPO) * MAX_DEFLECTION);
+        let (mut roll, mut pitch, mut yaw, mut throttle, mut flags) = (CENTER, CENTER, CENTER, CENTER, 0u8);
+
+        if settings_open {
+            // Stay disarmed; never send active control while remapping.
+            armed = false;
+            if let Some(l) = &link {
+                l.control.disarm();
+            }
+            if let Some(a) = listening {
+                if let Some(kc) = pad.captured_key.take() {
+                    bindings.set(a, kc);
+                    listening = None;
+                    if let Some(p) = &cfg_path {
+                        settings::save(p, &bindings);
+                    }
+                }
+            }
+            if let Some((tx_, ty_)) = pad.tap.take() {
+                match settings_hit(tx_ as usize, ty_ as usize, win_w, win_h) {
+                    Some(SettingsHit::Row(a)) => listening = Some(a),
+                    Some(SettingsHit::Reset) => {
+                        bindings = settings::Bindings::default();
+                        if let Some(p) = &cfg_path {
+                            settings::save(p, &bindings);
+                        }
+                    }
+                    Some(SettingsHit::Done) => {
+                        settings_open = false;
+                        listening = None;
+                    }
+                    None => {}
+                }
+            }
+            pad.arm_toggle = false; // discard control one-shots while in settings
+        } else {
+            // D-pad trim (edge-triggered ±1 per press), headless toggle, reset trim.
+            const TRIM_LIMIT: i8 = 40;
+            if pad.hx > 0.5 && prev_hx <= 0.5 { trim_roll = (trim_roll + 1).min(TRIM_LIMIT); }
+            if pad.hx < -0.5 && prev_hx >= -0.5 { trim_roll = (trim_roll - 1).max(-TRIM_LIMIT); }
+            if pad.hy < -0.5 && prev_hy >= -0.5 { trim_pitch = (trim_pitch + 1).min(TRIM_LIMIT); }
+            if pad.hy > 0.5 && prev_hy <= 0.5 { trim_pitch = (trim_pitch - 1).max(-TRIM_LIMIT); }
+            prev_hx = pad.hx;
+            prev_hy = pad.hy;
+            if pad.headless_toggle { headless = !headless; pad.headless_toggle = false; }
+            if pad.trim_reset { trim_roll = 0; trim_pitch = 0; pad.trim_reset = false; }
+
+            roll = apply_trim(shape(dz(pad.rx)), trim_roll);
+            pitch = apply_trim(shape(dz(-pad.ry)), trim_pitch);
+            yaw = shape(dz(pad.lx));
+            prev_throttle = ramp_toward(prev_throttle, shape(dz(-pad.ly)), THROTTLE_RAMP);
+            throttle = prev_throttle;
+            if pad.takeoff { flags |= FLAG_TAKEOFF; }
+            if pad.land { flags |= FLAG_LAND; }
+            if pad.flip { flags |= FLAG_FLIP; }
+            if pad.calibrate { flags |= FLAG_CALIBRATE; }
+            if headless { flags |= FLAG_HEADLESS; }
+            if pad.emergency { flags |= FLAG_EMERGENCY; armed = false; }
+
+            if let Some(l) = &link {
+                if pad.arm_toggle {
+                    armed = !armed;
+                    if armed { l.control.arm(); prev_throttle = CENTER; } else { l.control.disarm(); }
+                }
+                if pad.emergency { l.control.arm(); }
+                l.control.set(ControlState { roll, pitch, throttle, yaw, flags });
+                if !armed && !pad.emergency { l.control.disarm(); }
+            }
+            pad.arm_toggle = false;
+
+            // Taps: open settings (KEY MAP, disarmed only) or reconnect.
+            if let Some((tx_, ty_)) = pad.tap.take() {
+                let (px, py) = (tx_ as usize, ty_ as usize);
+                let inside = |(x, y, bw, bh): (usize, usize, usize, usize)| px >= x && px < x + bw && py >= y && py < y + bh;
+                if !armed && inside(menu_btn(win_w, win_h)) {
+                    settings_open = true;
+                    listening = None;
+                } else if !connected && inside(reconnect_btn(win_w, win_h)) {
+                    wifi_requested = false;
+                    last_attempt = None;
+                }
+            }
+        }
+        pad.captured_key = None;
 
         if fps_since.elapsed() >= Duration::from_secs(1) {
             shown_fps = fps_count;
@@ -220,18 +274,11 @@ pub fn run(app: AndroidApp) {
                 *px = 0x0000_0000;
             }
             scale_video(&mut fb, win_w, win_h, &vid);
-            let connected = last_frame.map_or(false, |t| t.elapsed() < Duration::from_secs(2));
-            // Touch the reconnect button (shown only when disconnected) -> re-fire auto-connect.
-            if let Some((tx_, ty_)) = pad.tap.take() {
-                let (bx, by, bw, bh) = reconnect_btn(win_w, win_h);
-                let (px, py) = (tx_ as usize, ty_ as usize);
-                if !connected && px >= bx && px < bx + bw && py >= by && py < by + bh {
-                    wifi_requested = false;
-                    last_attempt = None;
-                    log::info!("reconnect button tapped");
-                }
+            if settings_open {
+                draw_settings(&mut fb, win_w, win_h, &bindings, listening);
+            } else {
+                draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless);
             }
-            draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless);
             if let Some(nw) = &window {
                 blit(nw, &fb, win_w, win_h);
             }
@@ -415,7 +462,87 @@ fn nearby_wifi_granted() -> bool {
     matches!(r, Ok(0)) // PackageManager.PERMISSION_GRANTED
 }
 
-fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
+/// App-private files dir (for persisting bindings), via Context.getFilesDir().
+fn files_dir() -> Option<String> {
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.ok()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+    let r = (|| -> jni::errors::Result<String> {
+        let file = env.call_method(&activity, "getFilesDir", "()Ljava/io/File;", &[])?.l()?;
+        let path = env.call_method(&file, "getAbsolutePath", "()Ljava/lang/String;", &[])?.l()?;
+        let js = jni::objects::JString::from(path);
+        let s = env.get_string(&js)?;
+        Ok(s.into())
+    })();
+    let _ = env.exception_clear();
+    r.ok()
+}
+
+/// What a tap in the settings overlay hit.
+enum SettingsHit {
+    Row(settings::Action),
+    Reset,
+    Done,
+}
+
+fn settings_row_y(i: usize, h: usize) -> usize {
+    h / 6 + i * (h / 16)
+}
+fn done_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
+    (w - w / 12 - w / 4, h - h / 8, w / 4, h / 18)
+}
+fn reset_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
+    (w / 12, h - h / 8, w / 4, h / 18)
+}
+
+fn settings_hit(px: usize, py: usize, w: usize, h: usize) -> Option<SettingsHit> {
+    let inside = |(x, y, bw, bh): (usize, usize, usize, usize)| px >= x && px < x + bw && py >= y && py < y + bh;
+    if inside(done_btn(w, h)) {
+        return Some(SettingsHit::Done);
+    }
+    if inside(reset_btn(w, h)) {
+        return Some(SettingsHit::Reset);
+    }
+    let rh = h / 16;
+    for (i, a) in settings::ACTIONS.iter().enumerate() {
+        let ry = settings_row_y(i, h);
+        if px > w / 12 && px < w - w / 12 && py >= ry && py < ry + rh {
+            return Some(SettingsHit::Row(*a));
+        }
+    }
+    None
+}
+
+/// Full-screen key-mapping overlay.
+fn draw_settings(fb: &mut [u32], w: usize, h: usize, b: &settings::Bindings, listening: Option<settings::Action>) {
+    let mut c = hud::Canvas { buf: fb, w, h };
+    c.panel(0, 0, w, h, 235); // dark translucent over the video
+    let s = (w / 360).max(2);
+    let g = 8 * s;
+    c.glow_text(w / 12, h / 12, "KEY MAPPING", hud::CYAN, s + 1);
+    let rh = h / 16;
+    for (i, a) in settings::ACTIONS.iter().enumerate() {
+        let ry = settings_row_y(i, h) + (rh - g) / 2;
+        let lit = listening == Some(*a);
+        let col = if lit { hud::MAGENTA } else { hud::CYAN };
+        c.glow_text(w / 12, ry, a.label(), col, s);
+        let val = if lit { "PRESS BUTTON".to_string() } else { settings::button_name(b.get(*a)) };
+        c.glow_text(w - w / 12 - val.len() * g, ry, &val, col, s);
+    }
+    // DONE / RESET buttons
+    for (rect, label, col) in [(done_btn(w, h), "DONE", hud::GREEN), (reset_btn(w, h), "RESET", hud::AMBER)] {
+        let (bx, by, bw, bh) = rect;
+        c.hline(bx, by, bw, col);
+        c.hline(bx, by + bh, bw, col);
+        c.vline(bx, by, bh, col);
+        c.vline(bx + bw, by, bh, col);
+        c.glow_text(bx + bw.saturating_sub(label.len() * g) / 2, by + bh.saturating_sub(g) / 2, label, col, s);
+    }
+    c.glow_text(w / 12, h - h / 14, "tap a row, then press a controller button", hud::CYAN, s.max(2));
+}
+
+fn handle_input(event: &InputEvent, pad: &mut Pad, b: &settings::Bindings) -> InputStatus {
     match event {
         InputEvent::MotionEvent(m) => {
             if u32::from(m.source()) & SOURCE_CLASS_JOYSTICK != 0 && m.pointer_count() > 0 {
@@ -440,35 +567,34 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
             InputStatus::Unhandled
         }
         InputEvent::KeyEvent(k) => {
+            use settings::Action::*;
             let down = matches!(k.action(), KeyAction::Down);
-            let kc = k.key_code();
-            match kc {
-                Keycode::ButtonStart => {
-                    if down && k.repeat_count() == 0 {
-                        pad.arm_toggle = true;
-                    }
-                }
-                Keycode::ButtonSelect | Keycode::ButtonMode => pad.emergency = down,
-                Keycode::ButtonA => pad.land = down,
-                Keycode::ButtonB => pad.takeoff = down,
-                Keycode::ButtonY => pad.flip = down,
-                Keycode::ButtonX => pad.calibrate = down,
-                Keycode::ButtonL1 => {
-                    if down && k.repeat_count() == 0 {
-                        pad.headless_toggle = true;
-                    }
-                }
-                Keycode::ButtonR1 => {
-                    if down && k.repeat_count() == 0 {
-                        pad.trim_reset = true;
-                    }
-                }
-                _ => {}
+            let edge = down && k.repeat_count() == 0;
+            let kc = u32::from(k.key_code());
+            if down {
+                pad.captured_key = Some(kc);
             }
+            if kc == b.get(Arm) && edge { pad.arm_toggle = true; }
+            if kc == b.get(Headless) && edge { pad.headless_toggle = true; }
+            if kc == b.get(TrimReset) && edge { pad.trim_reset = true; }
+            if kc == b.get(Takeoff) { pad.takeoff = down; }
+            if kc == b.get(Land) { pad.land = down; }
+            if kc == b.get(Flip) { pad.flip = down; }
+            if kc == b.get(Calibrate) { pad.calibrate = down; }
+            if kc == b.get(Emergency) { pad.emergency = down; }
             InputStatus::Handled
         }
         _ => InputStatus::Unhandled,
     }
+}
+
+/// "KEY MAP" button rect (below the top panel) — opens settings when disarmed.
+fn menu_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
+    let s = (w / 360).max(2);
+    let panel_bottom = h / 12 + s + (8 * s * 3 + 6 * s);
+    let bw = w / 4;
+    let bh = h / 26;
+    (w / 2 - bw / 2, panel_bottom + h / 60, bw, bh)
 }
 
 /// On-screen reconnect-button rect (x, y, w, h), in native pixels. Shared by the
@@ -533,6 +659,17 @@ fn draw_hud(
     c.glow_text(tx, row2, &format!("TRM R{trim_roll:+03} P{trim_pitch:+03}"), hud::CYAN, s);
     if headless {
         c.glow_text(x1 - 9 * g, row2, "HEADLESS", hud::MAGENTA, s);
+    }
+
+    // KEY MAP button (disarmed only) — opens the settings overlay.
+    if !armed {
+        let (bx, by, bw, bh) = menu_btn(w, h);
+        c.hline(bx, by, bw, hud::CYAN);
+        c.hline(bx, by + bh, bw, hud::CYAN);
+        c.vline(bx, by, bh, hud::CYAN);
+        c.vline(bx + bw, by, bh, hud::CYAN);
+        let label = "KEY MAP";
+        c.glow_text(bx + bw.saturating_sub(label.len() * g) / 2, by + bh.saturating_sub(g) / 2, label, hud::CYAN, s);
     }
 
     // stick boxes near the bottom safe corners
