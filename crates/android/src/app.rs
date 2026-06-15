@@ -514,6 +514,10 @@ fn bind_to_wifi() -> bool {
     };
     let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
 
+    // NetworkCapabilities flags.
+    const NET_CAP_INTERNET: i32 = 12;
+    const NET_CAP_VALIDATED: i32 = 16;
+
     let res = (|| -> jni::errors::Result<bool> {
         let name = env.new_string("connectivity")?;
         let cm = env
@@ -524,6 +528,12 @@ fn bind_to_wifi() -> bool {
             .l()?
             .into();
         let len = env.get_array_length(&networks)?;
+        // The drone AP is a *local-only* WiFi: it has no validated internet, while
+        // home WiFi does. Prefer the un-validated WiFi so we never bind the drone's
+        // UDP to home WiFi after the AP drops and the phone falls back. Fall back to
+        // any WiFi if none stands out (e.g. cold start with only the drone AP up).
+        let mut chosen: Option<JObject> = None;
+        let mut chosen_local = false;
         for i in 0..len {
             let net = env.get_object_array_element(&networks, i)?;
             let caps = env
@@ -532,29 +542,39 @@ fn bind_to_wifi() -> bool {
             if caps.is_null() {
                 continue;
             }
-            let is_wifi = env
-                .call_method(&caps, "hasTransport", "(I)Z", &[JValue::Int(TRANSPORT_WIFI)])?
-                .z()?;
-            if is_wifi {
+            let is_wifi = env.call_method(&caps, "hasTransport", "(I)Z", &[JValue::Int(TRANSPORT_WIFI)])?.z()?;
+            if !is_wifi {
+                continue;
+            }
+            let validated = env.call_method(&caps, "hasCapability", "(I)Z", &[JValue::Int(NET_CAP_VALIDATED)])?.z()?;
+            let internet = env.call_method(&caps, "hasCapability", "(I)Z", &[JValue::Int(NET_CAP_INTERNET)])?.z()?;
+            log::info!("bind_to_wifi: wifi net[{i}] internet={internet} validated={validated}");
+            if !validated && !chosen_local {
+                chosen = Some(net); // the drone's local-only AP — prefer it
+                chosen_local = true;
+            } else if chosen.is_none() {
+                chosen = Some(net); // fallback
+            }
+        }
+        match chosen {
+            Some(net) => {
                 let ok = env
                     .call_method(&cm, "bindProcessToNetwork", "(Landroid/net/Network;)Z", &[(&net).into()])?
                     .z()?;
-                return Ok(ok);
+                log::info!("bind_to_wifi -> {ok} (local-only AP={chosen_local})");
+                Ok(ok)
+            }
+            None => {
+                log::info!("bind_to_wifi: no wifi network available");
+                Ok(false)
             }
         }
-        Ok(false)
     })();
     let _ = env.exception_clear();
-    match res {
-        Ok(b) => {
-            log::info!("bind_to_wifi -> {b}");
-            b
-        }
-        Err(e) => {
-            log::error!("bind_to_wifi error: {e:?}");
-            false
-        }
-    }
+    res.unwrap_or_else(|e| {
+        log::error!("bind_to_wifi error: {e:?}");
+        false
+    })
 }
 
 /// Ask Android to connect to the drone's WiFi AP (SSID prefix `WIFI_8K__`) via
