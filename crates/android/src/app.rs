@@ -919,17 +919,20 @@ fn draw_preview(
         c.line(hcx, hcy, rx, ry, hud::CYAN);
         let r = rotor as f32;
         if motors_on {
-            // Faint disc + three blades swept to the current phase → reads as spin.
+            // Faint disc + three radial blades. Radial spokes (120° apart, not full
+            // diameters) keep the symmetry period at 120°, which the per-frame spin
+            // increment never reaches — so it never strobes to a standstill. The
+            // leading blade is brighter to make the spin direction unambiguous.
             for seg in 0..16 {
-                let a0 = spin + seg as f32 * (TAU / 16.0);
+                let a0 = seg as f32 * (TAU / 16.0);
                 let a1 = a0 + TAU / 16.0;
                 c.line(rx + (r * a0.cos()) as i32, ry + (r * a0.sin()) as i32,
                        rx + (r * a1.cos()) as i32, ry + (r * a1.sin()) as i32, 0x0020_5030);
             }
             for b in 0..3 {
                 let a = spin + b as f32 * (TAU / 3.0);
-                let (dx, dy) = ((r * a.cos()) as i32, (r * a.sin()) as i32);
-                c.line(rx - dx, ry - dy, rx + dx, ry + dy, hud::GREEN);
+                let col = if b == 0 { hud::GREEN } else { 0x0026_8A1F };
+                c.line(rx, ry, rx + (r * a.cos()) as i32, ry + (r * a.sin()) as i32, col);
             }
         } else {
             // Stopped: a single two-blade prop at rest.
