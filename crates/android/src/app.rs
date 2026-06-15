@@ -191,6 +191,17 @@ pub fn run(app: AndroidApp) {
         }
         let connected = last_frame.map_or(false, |t| t.elapsed() < Duration::from_secs(2));
 
+        // Auto-suspend: if the link drops, fall back to STANDBY (disarmed) instead of
+        // carrying a stale armed state across the reconnect — which caused state
+        // weirdness — and it lets the watchdog rebind/restart the link to recover.
+        if !connected && armed {
+            armed = false;
+            if let Some(l) = &link {
+                l.control.disarm();
+            }
+            log::info!("link lost -> STANDBY (auto-suspend)");
+        }
+
         // Speed preset: a bound button cycles LOW -> MED -> HIGH (in flight/sim, not
         // while remapping in settings). Scales max stick deflection. Persisted.
         if pad.speed_cycle {
@@ -422,11 +433,11 @@ pub fn run(app: AndroidApp) {
                                 }
                             }
                         }
-                    } else if !connected {
-                        // No video: tapping the feed asks the system to join the drone
-                        // AP. Debounce — every tap would otherwise re-issue the request
-                        // and keep the system WiFi dialog on top (it steals gamepad
-                        // focus, so you can't arm). Fire at most once per ~8 s.
+                    } else if !connected && inside(video_rect(win_w, win_h)) {
+                        // Tapping the video-feed area (not the surrounding chrome) asks
+                        // the system to join the drone AP. Debounce — every tap would
+                        // otherwise re-issue the request and keep the system WiFi dialog
+                        // on top (it steals gamepad focus). Fire at most once per ~8 s.
                         let ready = last_wifi_request.map_or(true, |t| t.elapsed() > Duration::from_secs(8));
                         if ready {
                             if nearby_wifi_granted() {
@@ -486,6 +497,15 @@ pub fn run(app: AndroidApp) {
         l.stop();
     }
     log::info!("android_main exiting");
+}
+
+/// The centered, aspect-correct rectangle where the video is drawn (matches
+/// `scale_video`). Used to hit-test taps for reconnect.
+fn video_rect(w: usize, h: usize) -> (usize, usize, usize, usize) {
+    let scale = (w as f32 / VIDEO_W as f32).min(h as f32 / VIDEO_H as f32);
+    let dw = (VIDEO_W as f32 * scale) as usize;
+    let dh = (VIDEO_H as f32 * scale) as usize;
+    ((w - dw) / 2, (h - dh) / 2, dw, dh)
 }
 
 /// Scale the 240x320 video into `fb` (native size), aspect-correct and centered.
