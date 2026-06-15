@@ -49,12 +49,23 @@ Android app flew the drone with live video + gamepad control. Confirmed:
   scan. Can't be requested in-app (pure-Rust NativeActivity has no Activity
   handle / UI thread for the runtime-permission dialog).
 
+## Android extras (done)
+
+- **Link-quality meter** (fps-based bars, green/amber/red) — range warning.
+- **Trim** on the D-pad, **headless** on L1, **trim-reset** on R1; shown in HUD.
+- **Touch RECONNECT** button (shown when disconnected).
+- **Skip connect dialog** when already on the drone wifi (grace period).
+- **KEY MAP settings** (disarmed): view + remap any action to any button by
+  pressing it; persisted to `bindings.txt`. Input is data-driven.
+- **SIM** (disarmed): fly a neon wireframe virtual drone with your mappings to
+  preview/practice — nothing sent to the real drone.
+- One-time setup unchanged: grant NEARBY_WIFI_DEVICES for auto-connect scan.
+
 ## Next
 
-- More close-range flights to build confidence + tune EXPO/MAX_DEFLECTION.
-- Optional: wire spare buttons / 8-way D-pad (headless, trim).
-- Quality-of-life: signal-strength indicator; skip the connect dialog if already
-  on the drone wifi; let the user re-trigger auto-connect from a HUD button.
+- More close-range flights; tune EXPO/MAX_DEFLECTION.
+- Possible: confirm a faint doubled-text artifact in the overlay screens is only
+  a screenshot/compositor effect, not on-device.
 
 Build/deploy: `scripts/build-android.sh build` then
 `adb install -r target/debug/apk/skyraptor-android.apk`. Logs: `adb logcat -s skyraptor:I`.
