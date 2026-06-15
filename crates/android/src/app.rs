@@ -14,8 +14,8 @@ use jni::objects::{JObject, JObjectArray, JValue};
 use ndk::{hardware_buffer_format::HardwareBufferFormat, native_window::NativeWindow};
 use net::{DroneLink, LinkConfig};
 use protocol::{
-    apply_trim, axis_to_byte, expo, ramp_toward, ControlState, CENTER, FLAG_CALIBRATE,
-    FLAG_EMERGENCY, FLAG_FLIP, FLAG_HEADLESS, FLAG_LAND, FLAG_TAKEOFF,
+    apply_trim, avi::AviWriter, axis_to_byte, expo, ramp_toward, ControlState, CENTER,
+    FLAG_CALIBRATE, FLAG_EMERGENCY, FLAG_FLIP, FLAG_HEADLESS, FLAG_LAND, FLAG_TAKEOFF,
 };
 use zune_jpeg::JpegDecoder;
 
@@ -86,12 +86,16 @@ pub fn run(app: AndroidApp) {
     let mut frame: u64 = 0;
     let cfg_path = files_dir().map(|d| format!("{d}/bindings.txt"));
     let mut bindings = cfg_path.as_deref().map(settings::load).unwrap_or_default();
-    // Photo snapshots: saved to the app's external files dir (no permission needed,
+    // Photos + videos: saved to the app's external files dir (no permission needed,
     // pullable via adb / visible in a file manager).
-    let snap_dir = external_files_dir().map(|d| format!("{d}/snapshots"));
+    let media_dir = external_files_dir();
+    let snap_dir = media_dir.as_ref().map(|d| format!("{d}/snapshots"));
+    let video_dir = media_dir.as_ref().map(|d| format!("{d}/videos"));
     let mut last_jpeg: Option<Vec<u8>> = None; // latest decoded frame's raw JPEG
     let mut snap_note: Option<(String, Instant)> = None; // capture confirmation
     let mut snap_count: u32 = 0;
+    let mut recorder: Option<AviWriter<std::fs::File>> = None; // active MJPEG recording
+    let mut rec_start: Option<Instant> = None;
     let mut settings_open = false;
     let mut listening: Option<settings::Action> = None;
     let mut preview_open = false;
@@ -176,6 +180,9 @@ pub fn run(app: AndroidApp) {
                 if decode_into(&jpeg, &mut vid) {
                     last_frame = Some(Instant::now());
                     fps_count += 1;
+                    if let Some(rec) = &mut recorder {
+                        let _ = rec.write_frame(&jpeg); // mux this frame into the AVI
+                    }
                     last_jpeg = Some(jpeg); // keep raw bytes for snapshot (no re-encode)
                 }
             }
@@ -387,6 +394,30 @@ pub fn run(app: AndroidApp) {
                             },
                             _ => snap_note = Some(("NO FRAME".into(), Instant::now())),
                         }
+                    } else if connected && inside(rec_btn(win_w, win_h)) {
+                        // Toggle MJPEG-in-AVI recording.
+                        if let Some(rec) = recorder.take() {
+                            let n = rec.frame_count();
+                            let _ = rec.finish();
+                            rec_start = None;
+                            snap_note = Some((format!("VIDEO SAVED ({n}f)"), Instant::now()));
+                        } else if let Some(dir) = &video_dir {
+                            let ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+                            let started = std::fs::create_dir_all(dir)
+                                .and_then(|_| std::fs::File::create(format!("{dir}/rec_{ms}.avi")))
+                                .and_then(|f| AviWriter::new(f, VIDEO_W as u32, VIDEO_H as u32, 20));
+                            match started {
+                                Ok(w) => {
+                                    recorder = Some(w);
+                                    rec_start = Some(Instant::now());
+                                    snap_note = Some(("REC STARTED".into(), Instant::now()));
+                                }
+                                Err(e) => {
+                                    log::error!("record start failed: {e}");
+                                    snap_note = Some(("REC FAILED".into(), Instant::now()));
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -414,7 +445,8 @@ pub fn run(app: AndroidApp) {
                     .as_ref()
                     .filter(|(_, t)| t.elapsed() < Duration::from_millis(1500))
                     .map(|(m, _)| m.as_str());
-                draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless, bindings.speed, note);
+                let rec_secs = rec_start.map(|t| t.elapsed().as_secs());
+                draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless, bindings.speed, note, rec_secs);
                 // Camera flash: white out the frame briefly right after a capture.
                 if snap_note.as_ref().is_some_and(|(_, t)| t.elapsed() < Duration::from_millis(80)) {
                     for px in fb.iter_mut() {
@@ -426,6 +458,9 @@ pub fn run(app: AndroidApp) {
                 blit(nw, &fb, win_w, win_h);
             }
         }
+    }
+    if let Some(rec) = recorder.take() {
+        let _ = rec.finish(); // finalize any in-progress recording on exit
     }
     if let Some(l) = link {
         l.stop();
@@ -801,6 +836,12 @@ fn photo_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
     (w - w / 18 - bw, h / 4, bw, bh)
 }
 
+/// "REC" video button rect — just below the PHOTO button.
+fn rec_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
+    let (bx, by, bw, bh) = photo_btn(w, h);
+    (bx, by + bh + h / 60, bw, bh)
+}
+
 /// Write the latest raw JPEG frame to `<dir>/snap_<epoch-ms>.jpg`. Returns the file name.
 fn save_snapshot(dir: &str, jpeg: &[u8]) -> std::io::Result<String> {
     std::fs::create_dir_all(dir)?;
@@ -839,6 +880,7 @@ fn draw_hud(
     headless: bool,
     speed: u8,
     snap_note: Option<&str>,
+    rec_secs: Option<u64>,
 ) {
     let mut c = hud::Canvas { buf: fb, w, h };
     let s = (w / 360).max(2); // font scale: crisp at native res
@@ -899,19 +941,36 @@ fn draw_hud(
     c.stick_box(x1 - bs - 2 * s, y1 - bs - g, bs, roll, pitch, hud::CYAN);
     c.glow_text(x1 - 8 * g, y1 - g + s, "ROL/PIT", hud::CYAN, s.max(2));
 
-    // Tappable PHOTO button + capture confirmation (only while we have video).
+    // Tappable PHOTO + REC buttons (only while we have video).
     if connected {
-        let (bx, by, bw, bh) = photo_btn(w, h);
-        c.panel(bx, by, bw, bh, 200);
-        c.hline(bx, by, bw, hud::GREEN);
-        c.hline(bx, by + bh, bw, hud::GREEN);
-        c.vline(bx, by, bh, hud::GREEN);
-        c.vline(bx + bw, by, bh, hud::GREEN);
-        let label = "PHOTO";
-        c.glow_text(bx + bw.saturating_sub(label.len() * g) / 2, by + bh.saturating_sub(g) / 2, label, hud::GREEN, s);
+        let btn = |c: &mut hud::Canvas, rect: (usize, usize, usize, usize), label: &str, col: u32| {
+            let (bx, by, bw, bh) = rect;
+            c.panel(bx, by, bw, bh, 200);
+            c.hline(bx, by, bw, col);
+            c.hline(bx, by + bh, bw, col);
+            c.vline(bx, by, bh, col);
+            c.vline(bx + bw, by, bh, col);
+            c.glow_text(bx + bw.saturating_sub(label.len() * g) / 2, by + bh.saturating_sub(g) / 2, label, col, s);
+        };
+        btn(&mut c, photo_btn(w, h), "PHOTO", hud::GREEN);
+        // REC button turns red + shows elapsed time while recording.
+        let recording = rec_secs.is_some();
+        let rec_col = if recording { hud::RED } else { hud::CYAN };
+        let rec_label = if let Some(secs) = rec_secs {
+            format!("REC {:02}:{:02}", secs / 60, secs % 60)
+        } else {
+            "REC".to_string()
+        };
+        btn(&mut c, rec_btn(w, h), &rec_label, rec_col);
+        // Blinking record dot in the status panel while recording.
+        if recording && (frame / 12).is_multiple_of(2) {
+            c.fill(tx, row0 + g + 2 * s, 2 * s, 2 * s, hud::RED);
+        }
         if let Some(note) = snap_note {
+            let (pbx, _, pbw, _) = photo_btn(w, h);
+            let (_, rby, _, rbh) = rec_btn(w, h);
             let nw = note.len() * g;
-            c.glow_text(bx + bw.saturating_sub(nw) / 2, by + bh + s * 2, note, hud::GREEN, s);
+            c.glow_text(pbx + pbw.saturating_sub(nw) / 2, rby + rbh + s * 2, note, hud::GREEN, s);
         }
     }
 

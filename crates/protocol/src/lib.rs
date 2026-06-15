@@ -3,6 +3,8 @@
 //! Control: 8-byte UDP packets to `192.168.4.153:8090`. See
 //! `docs/superpowers/specs/2026-06-13-drcx5-protocol-spec.md`.
 
+pub mod avi;
+
 /// Header byte of an active control packet.
 pub const HEADER: u8 = 0x66;
 /// Footer byte of an active control packet.

@@ -69,14 +69,18 @@ Android app flew the drone with live video + gamepad control. Confirmed:
 - **PHOTO snapshot**: touch button (shown when video is live) writes the latest
   raw JPEG frame to `<externalFilesDir>/snapshots/snap_<ms>.jpg` — no re-encode,
   no storage permission. Camera-flash + "PHOTO SAVED" confirmation.
+- **VIDEO recording**: touch REC button muxes the live MJPEG stream into an AVI
+  (`MJPG` codec, frames stored verbatim — no encoder) at
+  `<externalFilesDir>/videos/rec_<ms>.avi`; plays in VLC/ffmpeg. Red REC button
+  + elapsed timer + blinking dot while recording; finalized on stop / app exit.
+  Muxer (`protocol::avi`) is host-unit-tested.
 - One-time setup unchanged: grant NEARBY_WIFI_DEVICES for the RECONNECT scan.
 
 ## Next
 
 - More close-range flights; tune the speed-preset deflection values.
-- Verify PHOTO snapshot on-device (needs a live frame).
-- Remaining stock-app features not yet ported: video recording (MJPEG -> file),
-  yaw trim (we trim roll+pitch only).
+- Verify PHOTO snapshot + VIDEO recording on-device (need a live frame).
+- Remaining stock-app feature not yet ported: yaw trim (we trim roll+pitch only).
 - Possible: confirm a faint doubled-text artifact in the overlay screens is only
   a screenshot/compositor effect, not on-device.
 
