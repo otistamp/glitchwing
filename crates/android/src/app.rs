@@ -804,7 +804,8 @@ fn draw_preview(
     let arm = w as f32 / 6.0;
     let rotor = ((3.0 + (throttle as f32 / 255.0) * 9.0) * s as f32) as i32;
     let (sr, cr) = ((roll as f32 - 128.0) / 128.0 * 0.6 + flip_angle).sin_cos();
-    let (sp, cp) = ((pitch as f32 - 128.0) / 128.0 * 0.6).sin_cos();
+    // Pitch tilt inverted in the sim view only (flight control unchanged).
+    let (sp, cp) = (-(pitch as f32 - 128.0) / 128.0 * 0.6).sin_cos();
     let (yh_s, yh_c) = heading.sin_cos();
     let (scam, ccam) = 0.5f32.sin_cos(); // camera look-down
     let project = |bx: f32, by: f32| -> (i32, i32) {
