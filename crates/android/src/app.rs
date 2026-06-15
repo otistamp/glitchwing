@@ -271,8 +271,6 @@ pub fn run(app: AndroidApp) {
                 if let Some(l) = &link {
                     l.control.disarm();
                 }
-                // Yaw inverted in the sim view only (flight control unchanged).
-                heading -= (yaw as f32 - 128.0) / 128.0 * 0.10;
                 // Emergency button: cut the motors. The drone drops fast and stays
                 // grounded until the next takeoff re-arms it.
                 if pad.estop {
@@ -315,10 +313,14 @@ pub fn run(app: AndroidApp) {
                 if sim_flip > 0.0 {
                     sim_flip = (sim_flip - 0.04).max(0.0);
                 }
-                // Rotors spin while "flying"; spin rate scales with throttle.
+                // Rotors spin while "flying"; spin rate scales with throttle. Yaw,
+                // roll and pitch only respond while the motors are spinning — a
+                // grounded or killed drone holds its heading and stays level.
                 let sim_motors = !sim_killed && (sim_alt > 0.02 || pad.takeoff || sim_flip > 0.0);
                 if sim_motors {
                     sim_spin = (sim_spin + 0.5 + thr_def.max(0.0) * 0.8) % std::f32::consts::TAU;
+                    // Yaw inverted in the sim view only (flight control unchanged).
+                    heading -= (yaw as f32 - 128.0) / 128.0 * 0.10;
                 }
                 if let Some((tx_, ty_)) = pad.tap.take() {
                     let (px, py) = (tx_ as usize, ty_ as usize);
@@ -882,6 +884,11 @@ fn draw_preview(
         bx += (lbl.len() + 1) * g;
     }
 
+    // Rotors spin while flying (alt/takeoff/flip), static when shut off or killed.
+    // With the motors off the drone can't manoeuvre: ignore roll/pitch (stays level).
+    let motors_on = !killed && (alt > 0.02 || pad.takeoff || flip_angle > 0.05);
+    let (roll, pitch) = if motors_on { (roll, pitch) } else { (128u8, 128u8) };
+
     // Behind/above pseudo-3D: roll about forward (Y), pitch about side (X), yaw about up (Z).
     let ground = h as f32 * 0.62;
     let cxf = w as f32 / 2.0;
@@ -910,8 +917,6 @@ fn draw_preview(
     // ground reference line
     c.hline(w / 8, ground as usize, w * 3 / 4, 0x0020_3020);
 
-    // Rotors spin while flying (alt/takeoff/flip), static when shut off or killed.
-    let motors_on = !killed && (alt > 0.02 || pad.takeoff || flip_angle > 0.05);
     let (hcx, hcy) = project(0.0, 0.0);
     for k in 0..4 {
         let a = FRAC_PI_4 + k as f32 * FRAC_PI_2;
