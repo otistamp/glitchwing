@@ -95,6 +95,8 @@ pub fn run(app: AndroidApp) {
     let mut sim_alt = 0.0f32; // sim altitude 0..~1.2
     let mut sim_flip = 0.0f32; // flip progress 1->0 while animating
     let mut sim_prev_flip = false;
+    let mut sim_prev_takeoff = false;
+    let mut sim_prev_land = false;
 
     while !quit {
         let mut got_window = false;
@@ -266,9 +268,13 @@ pub fn run(app: AndroidApp) {
                 }
                 // Yaw inverted in the sim view only (flight control unchanged).
                 heading -= (yaw as f32 - 128.0) / 128.0 * 0.10;
-                // Altitude from takeoff/land/throttle.
-                if pad.takeoff { sim_alt = (sim_alt + 0.03).min(1.0); }
-                if pad.land { sim_alt = (sim_alt - 0.03).max(0.0); }
+                // Takeoff (edge): if grounded, jump to 25% altitude. Land (edge):
+                // if airborne, drop straight to the ground. Like the real commands.
+                if pad.takeoff && !sim_prev_takeoff && sim_alt <= 0.01 { sim_alt = 0.25; }
+                sim_prev_takeoff = pad.takeoff;
+                if pad.land && !sim_prev_land && sim_alt > 0.01 { sim_alt = 0.0; }
+                sim_prev_land = pad.land;
+                // Throttle fine-tunes altitude around that.
                 sim_alt = (sim_alt + (throttle as f32 - 128.0) / 128.0 * 0.02).clamp(0.0, 1.2);
                 // Flip: a 360° barrel roll on the press edge.
                 if pad.flip && !sim_prev_flip {
@@ -611,7 +617,7 @@ fn draw_settings(fb: &mut [u32], w: usize, h: usize, b: &settings::Bindings, lis
         c.vline(bx + bw, by, bh, col);
         c.glow_text(bx + bw.saturating_sub(label.len() * g) / 2, by + bh.saturating_sub(g) / 2, label, col, s);
     }
-    c.glow_text(w / 12, h - h / 14, "tap a row, then press a controller button", hud::CYAN, s.max(2));
+    c.glow_text(w / 12, h / 12 + (s + 1) * 8 + s * 2, "tap a row, then press a controller button", hud::CYAN, s.max(2));
 }
 
 fn handle_input(event: &InputEvent, pad: &mut Pad, b: &settings::Bindings) -> InputStatus {
