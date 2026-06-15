@@ -65,6 +65,15 @@ impl Canvas<'_> {
         }
     }
 
+    /// Filled rectangle.
+    pub fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, color: u32) {
+        for yy in y..(y + h) {
+            for xx in x..(x + w) {
+                self.put(xx, yy, color);
+            }
+        }
+    }
+
     pub fn hline(&mut self, x: usize, y: usize, len: usize, color: u32) {
         for i in 0..len {
             self.put(x + i, y, color);

@@ -69,6 +69,7 @@ pub fn run(app: AndroidApp) {
     let (mut fps_count, mut shown_fps) = (0u32, 0u32);
     let mut fps_since = Instant::now();
     let mut frame: u64 = 0;
+    let app_start = Instant::now();
 
     while !quit {
         let mut got_window = false;
@@ -117,7 +118,9 @@ pub fn run(app: AndroidApp) {
             // granted once in Settings. (If already on the drone wifi manually we're
             // not stale, so this never fires.)
             if nearby_wifi_granted() {
-                if !wifi_requested {
+                // Grace period: if we're already on the drone wifi, video arrives
+                // within a couple seconds (not stale) and we never prompt.
+                if !wifi_requested && app_start.elapsed() > Duration::from_secs(4) {
                     wifi_requested = true;
                     request_drone_wifi();
                 }
@@ -234,7 +237,7 @@ fn bind_to_wifi() -> bool {
     };
     let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
 
-    let mut try_bind = || -> jni::errors::Result<bool> {
+    let res = (|| -> jni::errors::Result<bool> {
         let name = env.new_string("connectivity")?;
         let cm = env
             .call_method(&activity, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[(&name).into()])?
@@ -263,8 +266,9 @@ fn bind_to_wifi() -> bool {
             }
         }
         Ok(false)
-    };
-    match try_bind() {
+    })();
+    let _ = env.exception_clear();
+    match res {
         Ok(b) => {
             log::info!("bind_to_wifi -> {b}");
             b
@@ -291,7 +295,7 @@ fn request_drone_wifi() -> bool {
     let Ok(mut env) = vm.attach_current_thread() else { return false };
     let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
 
-    let mut go = || -> jni::errors::Result<()> {
+    let res = (|| -> jni::errors::Result<()> {
         let name = env.new_string("connectivity")?;
         let cm = env
             .call_method(&activity, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[(&name).into()])?
@@ -344,8 +348,9 @@ fn request_drone_wifi() -> bool {
             &[(&request).into(), (&pending).into()],
         )?;
         Ok(())
-    };
-    match go() {
+    })();
+    let _ = env.exception_clear();
+    match res {
         Ok(_) => {
             log::info!("requestNetwork({SSID_PREFIX}*) issued");
             true
@@ -368,6 +373,7 @@ fn nearby_wifi_granted() -> bool {
         env.call_method(&activity, "checkSelfPermission", "(Ljava/lang/String;)I", &[(&perm).into()])?
             .i()
     })();
+    let _ = env.exception_clear();
     matches!(r, Ok(0)) // PackageManager.PERMISSION_GRANTED
 }
 
@@ -433,11 +439,20 @@ fn draw_hud(
     let ph = g * 2 + 6 * s;
     c.panel(x0 + s, y0 + s, x1 - x0 - 2 * s, ph, 170);
     let tx = x0 + 2 * s;
+    let row0 = y0 + 2 * s;
     let (txt, col) = if armed { ("[ARMED]", hud::GREEN) } else { ("[STANDBY]", hud::AMBER) };
-    c.glow_text(tx, y0 + 2 * s, txt, col, s);
-    let link = if connected { "LINK" } else { "NO SIG" };
-    c.glow_text(x1 - 12 * g, y0 + 2 * s, link, if connected { hud::CYAN } else { hud::AMBER }, s);
-    c.glow_text(x1 - 5 * g, y0 + 2 * s, &format!("FPS{fps:02}"), hud::CYAN, s);
+    c.glow_text(tx, row0, txt, col, s);
+    let lk = if connected { "LINK" } else { "NOSIG" };
+    c.glow_text(x1 - 13 * g, row0, &format!("{lk} {fps:02}"), if connected { hud::CYAN } else { hud::AMBER }, s);
+    // link-quality meter from video fps (proxy for usable link; no perms needed):
+    // bars drop as you approach range limits — fly back before it hits zero.
+    let bars: u32 = if fps >= 18 { 3 } else if fps >= 10 { 2 } else if fps >= 3 { 1 } else { 0 };
+    let qc = if bars >= 3 { hud::GREEN } else if bars == 2 { hud::AMBER } else { hud::RED };
+    let bx = x1 - 4 * g;
+    for i in 0..3u32 {
+        let bh = (i as usize + 1) * 2 * s;
+        c.fill(bx + i as usize * 3 * s, row0 + g - bh, 2 * s, bh, if i < bars { qc } else { 0x0033_3333 });
+    }
     // throttle bar row
     c.glow_text(tx, y0 + 2 * s + g, "THR", hud::CYAN, s);
     let bar_x = tx + 4 * g;
