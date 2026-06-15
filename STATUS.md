@@ -66,13 +66,17 @@ Android app flew the drone with live video + gamepad control. Confirmed:
   three speed tiers.
 - **SIM** (disarmed): fly a neon wireframe virtual drone with your mappings to
   preview/practice — nothing sent to the real drone.
+- **PHOTO snapshot**: touch button (shown when video is live) writes the latest
+  raw JPEG frame to `<externalFilesDir>/snapshots/snap_<ms>.jpg` — no re-encode,
+  no storage permission. Camera-flash + "PHOTO SAVED" confirmation.
 - One-time setup unchanged: grant NEARBY_WIFI_DEVICES for the RECONNECT scan.
 
 ## Next
 
 - More close-range flights; tune the speed-preset deflection values.
-- Remaining stock-app features not yet ported: photo snapshot, video
-  recording (MJPEG -> file), yaw trim (we trim roll+pitch only).
+- Verify PHOTO snapshot on-device (needs a live frame).
+- Remaining stock-app features not yet ported: video recording (MJPEG -> file),
+  yaw trim (we trim roll+pitch only).
 - Possible: confirm a faint doubled-text artifact in the overlay screens is only
   a screenshot/compositor effect, not on-device.
 

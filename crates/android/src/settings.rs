@@ -39,7 +39,7 @@ impl Action {
             Action::Flip => "FLIP",
             Action::Calibrate => "CALIBRATE",
             Action::Headless => "HEADLESS",
-            Action::Emergency => "EMERGENCY",
+            Action::Emergency => "KILLSWITCH",
             Action::TrimReset => "TRIM RESET",
             Action::Speed => "SPEED",
         }

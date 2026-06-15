@@ -6,7 +6,7 @@
 //! cutout). Reuses `protocol`/`net`/`hud`. Stays disarmed until armed via Start.
 
 use std::mem::MaybeUninit;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use android_activity::input::{Axis, InputEvent, KeyAction, MotionAction};
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent, WindowManagerFlags};
@@ -86,6 +86,12 @@ pub fn run(app: AndroidApp) {
     let mut frame: u64 = 0;
     let cfg_path = files_dir().map(|d| format!("{d}/bindings.txt"));
     let mut bindings = cfg_path.as_deref().map(settings::load).unwrap_or_default();
+    // Photo snapshots: saved to the app's external files dir (no permission needed,
+    // pullable via adb / visible in a file manager).
+    let snap_dir = external_files_dir().map(|d| format!("{d}/snapshots"));
+    let mut last_jpeg: Option<Vec<u8>> = None; // latest decoded frame's raw JPEG
+    let mut snap_note: Option<(String, Instant)> = None; // capture confirmation
+    let mut snap_count: u32 = 0;
     let mut settings_open = false;
     let mut listening: Option<settings::Action> = None;
     let mut preview_open = false;
@@ -170,6 +176,7 @@ pub fn run(app: AndroidApp) {
                 if decode_into(&jpeg, &mut vid) {
                     last_frame = Some(Instant::now());
                     fps_count += 1;
+                    last_jpeg = Some(jpeg); // keep raw bytes for snapshot (no re-encode)
                 }
             }
         }
@@ -364,6 +371,22 @@ pub fn run(app: AndroidApp) {
                             log::warn!("NEARBY_WIFI_DEVICES not granted — enable it in Settings to join the drone wifi");
                         }
                         last_attempt = None; // let the watchdog rebind+restart promptly
+                    } else if connected && inside(photo_btn(win_w, win_h)) {
+                        // Snapshot: write the latest raw JPEG straight to a file.
+                        match (&snap_dir, &last_jpeg) {
+                            (Some(dir), Some(j)) => match save_snapshot(dir, j) {
+                                Ok(name) => {
+                                    snap_count += 1;
+                                    log::info!("snapshot saved: {name}");
+                                    snap_note = Some((format!("PHOTO SAVED ({snap_count})"), Instant::now()));
+                                }
+                                Err(e) => {
+                                    log::error!("snapshot failed: {e}");
+                                    snap_note = Some(("PHOTO FAILED".into(), Instant::now()));
+                                }
+                            },
+                            _ => snap_note = Some(("NO FRAME".into(), Instant::now())),
+                        }
                     }
                 }
             }
@@ -387,7 +410,17 @@ pub fn run(app: AndroidApp) {
                 let flip_angle = if sim_flip > 0.0 { (1.0 - sim_flip) * std::f32::consts::TAU } else { 0.0 };
                 draw_preview(&mut fb, win_w, win_h, roll, pitch, yaw, throttle, &pad, heading, sim_alt, flip_angle, sim_spin, sim_killed);
             } else {
-                draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless, bindings.speed);
+                let note = snap_note
+                    .as_ref()
+                    .filter(|(_, t)| t.elapsed() < Duration::from_millis(1500))
+                    .map(|(m, _)| m.as_str());
+                draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless, bindings.speed, note);
+                // Camera flash: white out the frame briefly right after a capture.
+                if snap_note.as_ref().is_some_and(|(_, t)| t.elapsed() < Duration::from_millis(80)) {
+                    for px in fb.iter_mut() {
+                        *px = 0x00FF_FFFF;
+                    }
+                }
             }
             if let Some(nw) = &window {
                 blit(nw, &fb, win_w, win_h);
@@ -589,6 +622,30 @@ fn files_dir() -> Option<String> {
     r.ok()
 }
 
+/// App-private *external* files dir (for snapshots), via getExternalFilesDir(null).
+/// No storage permission needed; reachable via a file manager or `adb pull`.
+fn external_files_dir() -> Option<String> {
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.ok()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+    let r = (|| -> jni::errors::Result<String> {
+        let null = JObject::null();
+        let file = env
+            .call_method(&activity, "getExternalFilesDir", "(Ljava/lang/String;)Ljava/io/File;", &[(&null).into()])?
+            .l()?;
+        if file.is_null() {
+            return Err(jni::errors::Error::NullPtr("getExternalFilesDir"));
+        }
+        let path = env.call_method(&file, "getAbsolutePath", "()Ljava/lang/String;", &[])?.l()?;
+        let js = jni::objects::JString::from(path);
+        let s = env.get_string(&js)?;
+        Ok(s.into())
+    })();
+    let _ = env.exception_clear();
+    r.ok()
+}
+
 /// What a tap in the settings overlay hit.
 enum SettingsHit {
     Row(settings::Action),
@@ -737,6 +794,22 @@ fn exit_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
     (w / 2 - w / 8, h - h / 8, w / 4, h / 18)
 }
 
+/// "PHOTO" snapshot button rect — upper-right, clear of the status panel and sticks.
+fn photo_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
+    let bw = w / 5;
+    let bh = h / 22;
+    (w - w / 18 - bw, h / 4, bw, bh)
+}
+
+/// Write the latest raw JPEG frame to `<dir>/snap_<epoch-ms>.jpg`. Returns the file name.
+fn save_snapshot(dir: &str, jpeg: &[u8]) -> std::io::Result<String> {
+    std::fs::create_dir_all(dir)?;
+    let ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let name = format!("snap_{ms}.jpg");
+    std::fs::write(format!("{dir}/{name}"), jpeg)?;
+    Ok(name)
+}
+
 /// On-screen reconnect-button rect (x, y, w, h), in native pixels. Shared by the
 /// HUD (to draw) and the loop (to hit-test the tap).
 fn reconnect_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
@@ -765,6 +838,7 @@ fn draw_hud(
     trim_pitch: i8,
     headless: bool,
     speed: u8,
+    snap_note: Option<&str>,
 ) {
     let mut c = hud::Canvas { buf: fb, w, h };
     let s = (w / 360).max(2); // font scale: crisp at native res
@@ -825,6 +899,22 @@ fn draw_hud(
     c.stick_box(x1 - bs - 2 * s, y1 - bs - g, bs, roll, pitch, hud::CYAN);
     c.glow_text(x1 - 8 * g, y1 - g + s, "ROL/PIT", hud::CYAN, s.max(2));
 
+    // Tappable PHOTO button + capture confirmation (only while we have video).
+    if connected {
+        let (bx, by, bw, bh) = photo_btn(w, h);
+        c.panel(bx, by, bw, bh, 200);
+        c.hline(bx, by, bw, hud::GREEN);
+        c.hline(bx, by + bh, bw, hud::GREEN);
+        c.vline(bx, by, bh, hud::GREEN);
+        c.vline(bx + bw, by, bh, hud::GREEN);
+        let label = "PHOTO";
+        c.glow_text(bx + bw.saturating_sub(label.len() * g) / 2, by + bh.saturating_sub(g) / 2, label, hud::GREEN, s);
+        if let Some(note) = snap_note {
+            let nw = note.len() * g;
+            c.glow_text(bx + bw.saturating_sub(nw) / 2, by + bh + s * 2, note, hud::GREEN, s);
+        }
+    }
+
     // Tappable reconnect button (only while disconnected).
     if !connected {
         let (bx, by, bw, bh) = reconnect_btn(w, h);
@@ -884,7 +974,7 @@ fn draw_preview(
         ("LAND", pad.land, hud::AMBER),
         ("FLIP", pad.flip || flip_angle > 0.05, hud::MAGENTA),
         ("CALIB", pad.calibrate, hud::CYAN),
-        ("EMERGENCY", killed, hud::RED),
+        ("KILLSWITCH", killed, hud::RED),
     ] {
         c.glow_text(bx, h / 12 + 2 * g + s * 4, lbl, if on { col } else { 0x0033_3333 }, s);
         bx += (lbl.len() + 1) * g;
