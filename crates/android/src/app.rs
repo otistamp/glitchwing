@@ -88,6 +88,9 @@ pub fn run(app: AndroidApp) {
     let mut listening: Option<settings::Action> = None;
     let mut preview_open = false;
     let mut heading = 0.0f32; // virtual-drone yaw (sim)
+    let mut sim_alt = 0.0f32; // sim altitude 0..~1.2
+    let mut sim_flip = 0.0f32; // flip progress 1->0 while animating
+    let mut sim_prev_flip = false;
 
     while !quit {
         let mut got_window = false;
@@ -246,6 +249,18 @@ pub fn run(app: AndroidApp) {
                     l.control.disarm();
                 }
                 heading += (yaw as f32 - 128.0) / 128.0 * 0.10;
+                // Altitude from takeoff/land/throttle.
+                if pad.takeoff { sim_alt = (sim_alt + 0.03).min(1.0); }
+                if pad.land { sim_alt = (sim_alt - 0.03).max(0.0); }
+                sim_alt = (sim_alt + (throttle as f32 - 128.0) / 128.0 * 0.02).clamp(0.0, 1.2);
+                // Flip: a 360° barrel roll on the press edge.
+                if pad.flip && !sim_prev_flip {
+                    sim_flip = 1.0;
+                }
+                sim_prev_flip = pad.flip;
+                if sim_flip > 0.0 {
+                    sim_flip = (sim_flip - 0.04).max(0.0);
+                }
                 if let Some((tx_, ty_)) = pad.tap.take() {
                     let (px, py) = (tx_ as usize, ty_ as usize);
                     let (x, y, bw, bh) = exit_btn(win_w, win_h);
@@ -277,6 +292,9 @@ pub fn run(app: AndroidApp) {
                         listening = None;
                     } else if !armed && inside(sim_btn(win_w, win_h)) {
                         preview_open = true;
+                        sim_alt = 0.0;
+                        sim_flip = 0.0;
+                        heading = 0.0;
                     } else if !connected && inside(reconnect_btn(win_w, win_h)) {
                         wifi_requested = false;
                         last_attempt = None;
@@ -300,7 +318,8 @@ pub fn run(app: AndroidApp) {
             if settings_open {
                 draw_settings(&mut fb, win_w, win_h, &bindings, listening);
             } else if preview_open {
-                draw_preview(&mut fb, win_w, win_h, roll, pitch, yaw, throttle, &pad, heading, frame);
+                let flip_angle = if sim_flip > 0.0 { (1.0 - sim_flip) * std::f32::consts::TAU } else { 0.0 };
+                draw_preview(&mut fb, win_w, win_h, roll, pitch, yaw, throttle, &pad, heading, sim_alt, flip_angle);
             } else {
                 draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless);
             }
@@ -741,9 +760,9 @@ fn draw_hud(
     }
 }
 
-/// Virtual-drone preview: a neon wireframe quad you "fly" with the mapped controls
-/// (disarmed; nothing sent to the real drone). Translates with roll/pitch, spins
-/// with yaw (heading), rotors grow with throttle; mapped action buttons light up.
+/// Virtual-drone preview: a neon wireframe quad seen from behind/above, "flown"
+/// with the mapped controls (disarmed; nothing sent). Roll/pitch tilt it, yaw
+/// spins it, throttle/takeoff/land set altitude, flip rolls it a full 360°.
 #[allow(clippy::too_many_arguments)]
 fn draw_preview(
     fb: &mut [u32],
@@ -755,53 +774,71 @@ fn draw_preview(
     throttle: u8,
     pad: &Pad,
     heading: f32,
-    frame: u64,
+    alt: f32,
+    flip_angle: f32,
 ) {
     use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
     let mut c = hud::Canvas { buf: fb, w, h };
-    c.panel(0, 0, w, h, 210);
+    c.panel(0, 0, w, h, 215);
     let s = (w / 360).max(2);
     let g = 8 * s;
     c.glow_text(w / 12, h / 12, "VIRTUAL DRONE - SIM", hud::MAGENTA, s);
+    // Readouts up top, clear of the EXIT button.
+    c.glow_text(w / 12, h / 12 + g + s * 2, &format!("THR{throttle:3} YAW{yaw:3} ROL{roll:3} PIT{pitch:3}"), hud::CYAN, s);
+    c.glow_text(w - w / 4, h / 12 + g + s * 2, &format!("ALT{:3.0}%", (alt * 100.0).min(120.0)), hud::CYAN, s);
+    let mut bx = w / 12;
+    for (lbl, on, col) in [
+        ("TAKEOFF", pad.takeoff, hud::GREEN),
+        ("LAND", pad.land, hud::AMBER),
+        ("FLIP", pad.flip || flip_angle > 0.05, hud::MAGENTA),
+        ("CALIB", pad.calibrate, hud::CYAN),
+    ] {
+        c.glow_text(bx, h / 12 + 2 * g + s * 4, lbl, if on { col } else { 0x0033_3333 }, s);
+        bx += (lbl.len() + 1) * g;
+    }
 
-    // Body translates with roll/pitch; rotors grow with throttle.
-    let cx = w as i32 / 2 + (roll as i32 - 128) * w as i32 / 500;
-    let cy = h as i32 / 2 - (pitch as i32 - 128) * h as i32 / 1000;
+    // Behind/above pseudo-3D: roll about forward (Y), pitch about side (X), yaw about up (Z).
+    let ground = h as f32 * 0.62;
+    let cxf = w as f32 / 2.0;
+    let drone_y = ground - alt * h as f32 * 0.30;
     let arm = w as f32 / 6.0;
-    let thr = throttle as f32 / 255.0;
-    let rotor = (3.0 + thr * 9.0) * s as f32;
+    let rotor = ((3.0 + (throttle as f32 / 255.0) * 9.0) * s as f32) as i32;
+    let (sr, cr) = ((roll as f32 - 128.0) / 128.0 * 0.6 + flip_angle).sin_cos();
+    let (sp, cp) = ((pitch as f32 - 128.0) / 128.0 * 0.6).sin_cos();
+    let (yh_s, yh_c) = heading.sin_cos();
+    let (scam, ccam) = 0.5f32.sin_cos(); // camera look-down
+    let project = |bx: f32, by: f32| -> (i32, i32) {
+        let (mut x, mut y, mut z) = (bx, by, 0.0f32);
+        let (nx, nz) = (x * cr + z * sr, -x * sr + z * cr); // roll about Y
+        x = nx;
+        z = nz;
+        let (ny, nz2) = (y * cp - z * sp, y * sp + z * cp); // pitch about X
+        y = ny;
+        z = nz2;
+        let (nx2, ny2) = (x * yh_c - y * yh_s, x * yh_s + y * yh_c); // yaw about Z
+        x = nx2;
+        y = ny2;
+        ((cxf + x) as i32, (drone_y - z * ccam - y * scam) as i32)
+    };
 
+    // ground reference line
+    c.hline(w / 8, ground as usize, w * 3 / 4, 0x0020_3020);
+
+    let (hcx, hcy) = project(0.0, 0.0);
     for k in 0..4 {
-        let a = heading + FRAC_PI_4 + k as f32 * FRAC_PI_2;
-        let rx = cx + (a.cos() * arm) as i32;
-        let ry = cy + (a.sin() * arm) as i32;
-        c.line(cx, cy, rx, ry, hud::CYAN); // arm
-        let r = rotor as i32; // rotor diamond
+        let a = FRAC_PI_4 + k as f32 * FRAC_PI_2;
+        let (rx, ry) = project(a.cos() * arm, a.sin() * arm);
+        c.line(hcx, hcy, rx, ry, hud::CYAN);
+        let r = rotor;
         c.line(rx - r, ry, rx, ry - r, hud::GREEN);
         c.line(rx, ry - r, rx + r, ry, hud::GREEN);
         c.line(rx + r, ry, rx, ry + r, hud::GREEN);
         c.line(rx, ry + r, rx - r, ry, hud::GREEN);
     }
-    // front indicator (heading) + hub
-    let fx = cx + (heading.cos() * arm * 1.6) as i32;
-    let fy = cy + (heading.sin() * arm * 1.6) as i32;
-    c.line(cx, cy, fx, fy, hud::MAGENTA);
+    let (fx, fy) = project(0.0, arm * 1.4); // forward indicator
+    c.line(hcx, hcy, fx, fy, hud::MAGENTA);
     let hub = 2 * s as i32;
-    c.fill((cx - hub).max(0) as usize, (cy - hub).max(0) as usize, 4 * s, 4 * s, hud::CYAN);
-
-    // Axis readout + mapped action buttons lighting up when pressed.
-    c.glow_text(w / 12, h - h / 8, &format!("THR{throttle:3} YAW{yaw:3} ROL{roll:3} PIT{pitch:3}"), hud::CYAN, s);
-    let mut bx = w / 12;
-    for (lbl, on, col) in [
-        ("TAKEOFF", pad.takeoff, hud::GREEN),
-        ("LAND", pad.land, hud::AMBER),
-        ("FLIP", pad.flip, hud::MAGENTA),
-        ("CALIB", pad.calibrate, hud::CYAN),
-    ] {
-        c.glow_text(bx, h - h / 6, lbl, if on { col } else { 0x0033_3333 }, s);
-        bx += (lbl.len() + 1) * g;
-    }
-    let _ = frame;
+    c.fill((hcx - hub).max(0) as usize, (hcy - hub).max(0) as usize, 4 * s, 4 * s, hud::CYAN);
 
     // EXIT button
     let (ex, ey, ew, eh) = exit_btn(w, h);
