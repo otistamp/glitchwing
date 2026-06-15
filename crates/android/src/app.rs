@@ -920,11 +920,11 @@ fn draw_preview(
     // Fuselage corners (computed first so the arms can attach to them): a pointed
     // body whose nose marks the front — no separate orientation marker needed.
     let bp = [
-        project(0.0, arm * 0.50),          // 0 nose
-        project(arm * 0.24, arm * 0.14),   // 1 front-right shoulder
-        project(arm * 0.20, -arm * 0.34),  // 2 rear-right
-        project(-arm * 0.20, -arm * 0.34), // 3 rear-left
-        project(-arm * 0.24, arm * 0.14),  // 4 front-left shoulder
+        project(0.0, arm * 0.66),          // 0 nose
+        project(arm * 0.14, arm * 0.20),   // 1 front-right shoulder
+        project(arm * 0.12, -arm * 0.48),  // 2 rear-right
+        project(-arm * 0.12, -arm * 0.48), // 3 rear-left
+        project(-arm * 0.14, arm * 0.20),  // 4 front-left shoulder
     ];
 
     // Arms + rotors. All one colour at full brightness — the pointed fuselage shows
