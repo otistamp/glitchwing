@@ -23,9 +23,9 @@ use crate::settings;
 
 const VIDEO_W: usize = 240;
 const VIDEO_H: usize = 320;
-const EXPO: f32 = 0.4;
+const EXPO: f32 = 0.25;
 const THROTTLE_RAMP: u8 = 6;
-const DEADZONE: f32 = 0.12;
+const DEADZONE: f32 = 0.06;
 const SOURCE_CLASS_JOYSTICK: u32 = 0x0000_0010;
 const SOURCE_CLASS_POINTER: u32 = 0x0000_0002; // touchscreen
 const TRANSPORT_WIFI: i32 = 1;
