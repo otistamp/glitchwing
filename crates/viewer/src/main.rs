@@ -49,7 +49,7 @@ fn main() {
     let mut gilrs = Gilrs::new().ok();
 
     let mut window = Window::new(
-        "Skyraptor — DRCX5",
+        "Glitchwing — DRCX5",
         W,
         H,
         WindowOptions { scale: Scale::X2, ..WindowOptions::default() },

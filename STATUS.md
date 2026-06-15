@@ -1,4 +1,4 @@
-# Skyraptor — status
+# Glitchwing — status
 
 Pure-Rust control + video for the Vivitar Sky Raptor **DRCX5** toy drone
 (stock app: the stock app, `the stock app`).
@@ -46,8 +46,8 @@ Android app flew the drone with live video + gamepad control. Confirmed:
 - **Maiden flight ended by WiFi range (RSSI -84) — a hardware limit. Fly close.**
 
 ### One-time setup on a fresh install
-- Grant **NEARBY_WIFI_DEVICES** (Settings → Apps → Skyraptor → Permissions →
-  Nearby devices, or `adb shell pm grant app.skyraptor.drcx5
+- Grant **NEARBY_WIFI_DEVICES** (Settings → Apps → Glitchwing → Permissions →
+  Nearby devices, or `adb shell pm grant app.glitchwing
   android.permission.NEARBY_WIFI_DEVICES`) — needed for the auto-connect WiFi
   scan. Can't be requested in-app (pure-Rust NativeActivity has no Activity
   handle / UI thread for the runtime-permission dialog).

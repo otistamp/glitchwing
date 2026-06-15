@@ -62,7 +62,7 @@ pub fn run(app: AndroidApp) {
     android_logger::init_once(
         android_logger::Config::default()
             .with_max_level(log::LevelFilter::Info)
-            .with_tag("skyraptor"),
+            .with_tag("glitchwing"),
     );
     log::info!("android_main (native-res render)");
 
@@ -632,7 +632,7 @@ fn request_drone_wifi() -> bool {
         let request = env.call_method(&rb, "build", "()Landroid/net/NetworkRequest;", &[])?.l()?;
 
         // PendingIntent.getBroadcast(activity, 0, new Intent(action), IMMUTABLE|UPDATE_CURRENT)
-        let action = env.new_string("app.skyraptor.drcx5.WIFI")?;
+        let action = env.new_string("app.glitchwing.WIFI")?;
         let intent = env.new_object("android/content/Intent", "(Ljava/lang/String;)V", &[(&action).into()])?;
         let pending = env
             .call_static_method(

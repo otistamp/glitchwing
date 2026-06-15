@@ -1,8 +1,8 @@
 [package]
-name = "skyraptor-android"
+name = "glitchwing-android"
 version = "0.1.0"
 edition = "2021"
-description = "Pure-Rust Android app for the DRCX5 (android-activity, software-blit render)"
+description = "Glitchwing — pure-Rust Android app for WiFi-camera toy drones (android-activity, software-blit render)"
 
 [lib]
 crate-type = ["cdylib"]
@@ -22,14 +22,16 @@ hud = { path = "../hud" }
 zune-jpeg = "0.4"
 
 [package.metadata.android]
-package = "app.skyraptor.drcx5"
+package = "app.glitchwing"
+resources = "res"
 
 [package.metadata.android.sdk]
 min_sdk_version = 24
 target_sdk_version = 34
 
 [package.metadata.android.application]
-label = "Skyraptor"
+label = "Glitchwing"
+icon = "@mipmap/ic_launcher"
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.INTERNET"

@@ -6,3 +6,6 @@ description = "Cyberpunk software-framebuffer HUD renderer (shared by desktop vi
 
 [dependencies]
 font8x8 = "0.3"
+
+[dev-dependencies]
+png = "0.17"

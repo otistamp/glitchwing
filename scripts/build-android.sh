@@ -13,4 +13,4 @@ export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-z,max-page-size=16384"
 
 cmd="${1:-build}"
 shift || true
-exec cargo apk "$cmd" -p skyraptor-android --target aarch64-linux-android "$@"
+exec cargo apk "$cmd" -p glitchwing-android --target aarch64-linux-android "$@"
