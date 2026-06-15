@@ -917,15 +917,26 @@ fn draw_preview(
     // ground reference line
     c.hline(w / 8, ground as usize, w * 3 / 4, 0x0020_3020);
 
-    let (hcx, hcy) = project(0.0, 0.0);
+    // Fuselage corners (computed first so the arms can attach to them): a pointed
+    // body whose nose marks the front — no separate orientation marker needed.
+    let bp = [
+        project(0.0, arm * 0.50),          // 0 nose
+        project(arm * 0.24, arm * 0.14),   // 1 front-right shoulder
+        project(arm * 0.20, -arm * 0.34),  // 2 rear-right
+        project(-arm * 0.20, -arm * 0.34), // 3 rear-left
+        project(-arm * 0.24, arm * 0.14),  // 4 front-left shoulder
+    ];
 
-    // Arms + rotors. All one colour — the pointed fuselage shows which way the
-    // drone faces, so no orientation colour-coding is needed.
+    // Arms + rotors. All one colour at full brightness — the pointed fuselage shows
+    // which way the drone faces. Each arm starts at its fuselage corner (not the
+    // centre) so nothing crosses inside the body.
     let (bright, dim) = (hud::CYAN, 0x0020_6070);
+    let arm_root = [1usize, 4, 3, 2]; // rotor k -> fuselage corner (FR, FL, RL, RR)
     for k in 0..4 {
         let a = FRAC_PI_4 + k as f32 * FRAC_PI_2;
         let (rx, ry) = project(a.cos() * arm, a.sin() * arm);
-        c.line(hcx, hcy, rx, ry, dim);
+        let (sx, sy) = bp[arm_root[k]];
+        c.line(sx, sy, rx, ry, bright);
         let r = rotor as f32;
         if motors_on {
             // Faint disc + three radial blades. Radial spokes (120° apart, not full
@@ -951,14 +962,7 @@ fn draw_preview(
         }
     }
 
-    // Fuselage: a pointed body whose nose marks the front (no marker line needed).
-    let bp = [
-        project(0.0, arm * 0.50),          // nose
-        project(arm * 0.24, arm * 0.14),   // front-right shoulder
-        project(arm * 0.20, -arm * 0.34),  // rear-right
-        project(-arm * 0.20, -arm * 0.34), // rear-left
-        project(-arm * 0.24, arm * 0.14),  // front-left shoulder
-    ];
+    // Fuselage outline.
     for i in 0..bp.len() {
         let (x0, y0) = bp[i];
         let (x1, y1) = bp[(i + 1) % bp.len()];
