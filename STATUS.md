@@ -60,13 +60,19 @@ Android app flew the drone with live video + gamepad control. Confirmed:
   pops the system WiFi-join dialog; never auto-prompts on signal loss.
 - **KEY MAP settings** (disarmed): view + remap any action to any button by
   pressing it; persisted to `bindings.txt`. Input is data-driven.
+- **Speed presets** (LOW/MED/HIGH): a bindable SPEED button (default MODE)
+  cycles the rate in flight, scaling max stick deflection (0.35/0.6/0.9);
+  shown on the HUD (`SPD LO/MD/HI`) and persisted. Mirrors the stock app's
+  three speed tiers.
 - **SIM** (disarmed): fly a neon wireframe virtual drone with your mappings to
   preview/practice — nothing sent to the real drone.
 - One-time setup unchanged: grant NEARBY_WIFI_DEVICES for the RECONNECT scan.
 
 ## Next
 
-- More close-range flights; tune EXPO/MAX_DEFLECTION.
+- More close-range flights; tune the speed-preset deflection values.
+- Remaining stock-app features not yet ported: photo snapshot, video
+  recording (MJPEG -> file), yaw trim (we trim roll+pitch only).
 - Possible: confirm a faint doubled-text artifact in the overlay screens is only
   a screenshot/compositor effect, not on-device.
 

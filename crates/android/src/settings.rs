@@ -14,9 +14,11 @@ pub enum Action {
     Headless = 5,
     Emergency = 6,
     TrimReset = 7,
+    /// Button that cycles the speed/rate preset (LOW -> MED -> HIGH).
+    Speed = 8,
 }
 
-pub const ACTIONS: [Action; 8] = [
+pub const ACTIONS: [Action; 9] = [
     Action::Arm,
     Action::Takeoff,
     Action::Land,
@@ -25,6 +27,7 @@ pub const ACTIONS: [Action; 8] = [
     Action::Headless,
     Action::Emergency,
     Action::TrimReset,
+    Action::Speed,
 ];
 
 impl Action {
@@ -38,22 +41,38 @@ impl Action {
             Action::Headless => "HEADLESS",
             Action::Emergency => "EMERGENCY",
             Action::TrimReset => "TRIM RESET",
+            Action::Speed => "SPEED",
         }
+    }
+}
+
+/// Max stick deflection (fraction of full) for each speed preset: LOW, MED, HIGH.
+/// Mirrors the stock app's three speed tiers (slow/medium/full-rate).
+pub const SPEED_DEFLECTION: [f32; 3] = [0.35, 0.6, 0.9];
+
+/// Short HUD label for a speed level.
+pub fn speed_name(level: u8) -> &'static str {
+    match level {
+        0 => "LO",
+        1 => "MD",
+        _ => "HI",
     }
 }
 
 /// Action → gamepad keycode (indexed by `Action as usize`), plus config flags.
 #[derive(Clone, Copy)]
 pub struct Bindings {
-    pub keys: [u32; 8],
+    pub keys: [u32; 9],
     /// Throttle from L2/R2 triggers (true) vs the left-stick Y axis (false).
     pub throttle_triggers: bool,
+    /// Speed/rate preset: 0 = LOW, 1 = MED, 2 = HIGH.
+    pub speed: u8,
 }
 
 impl Default for Bindings {
     fn default() -> Self {
-        // Start, B, A, Y, X, L1, Select, R1
-        Bindings { keys: [108, 97, 96, 100, 99, 102, 109, 103], throttle_triggers: false }
+        // Start, B, A, Y, X, L1, Select, R1, Mode
+        Bindings { keys: [108, 97, 96, 100, 99, 102, 109, 103, 110], throttle_triggers: false, speed: 1 }
     }
 }
 
@@ -91,8 +110,15 @@ pub fn load(path: &str) -> Bindings {
     let mut b = Bindings::default();
     if let Ok(s) = fs::read_to_string(path) {
         let nums: Vec<u32> = s.split_whitespace().filter_map(|t| t.parse().ok()).collect();
-        if nums.len() >= 8 {
-            b.keys.copy_from_slice(&nums[..8]);
+        if nums.len() >= 11 {
+            // Current format: 9 keys + throttle flag + speed level.
+            b.keys.copy_from_slice(&nums[..9]);
+            b.throttle_triggers = nums[9] != 0;
+            b.speed = (nums[10] as u8).min(2);
+        } else if nums.len() >= 8 {
+            // Legacy format: 8 keys (+ optional throttle flag). Keep the new Speed
+            // binding and level at their defaults.
+            b.keys[..8].copy_from_slice(&nums[..8]);
             b.throttle_triggers = nums.get(8).is_some_and(|&v| v != 0);
         }
     }
@@ -102,6 +128,7 @@ pub fn load(path: &str) -> Bindings {
 pub fn save(path: &str, b: &Bindings) {
     let mut nums: Vec<u32> = b.keys.to_vec();
     nums.push(b.throttle_triggers as u32);
+    nums.push(b.speed as u32);
     let s = nums.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(" ");
     let _ = fs::write(path, s);
 }

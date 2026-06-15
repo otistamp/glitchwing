@@ -23,7 +23,6 @@ use crate::settings;
 
 const VIDEO_W: usize = 240;
 const VIDEO_H: usize = 320;
-const MAX_DEFLECTION: f32 = 0.7;
 const EXPO: f32 = 0.4;
 const THROTTLE_RAMP: u8 = 6;
 const DEADZONE: f32 = 0.12;
@@ -42,6 +41,7 @@ struct Pad {
     arm_toggle: bool,
     emergency: bool,
     estop: bool, // emergency one-shot edge (for the sim kill)
+    speed_cycle: bool, // one-shot edge: cycle the speed preset
     takeoff: bool,
     land: bool,
     flip: bool,
@@ -175,8 +175,20 @@ pub fn run(app: AndroidApp) {
         }
         let connected = last_frame.map_or(false, |t| t.elapsed() < Duration::from_secs(2));
 
+        // Speed preset: a bound button cycles LOW -> MED -> HIGH (in flight/sim, not
+        // while remapping in settings). Scales max stick deflection. Persisted.
+        if pad.speed_cycle {
+            pad.speed_cycle = false;
+            if !settings_open {
+                bindings.speed = (bindings.speed + 1) % 3;
+                if let Some(p) = &cfg_path {
+                    settings::save(p, &bindings);
+                }
+            }
+        }
+        let max_defl = settings::SPEED_DEFLECTION[(bindings.speed as usize).min(2)];
         let dz = |v: f32| if v.abs() > DEADZONE { v } else { 0.0 };
-        let shape = |raw: f32| axis_to_byte(expo(raw, EXPO) * MAX_DEFLECTION);
+        let shape = |raw: f32| axis_to_byte(expo(raw, EXPO) * max_defl);
         let (mut roll, mut pitch, mut yaw, mut throttle, mut flags) = (CENTER, CENTER, CENTER, CENTER, 0u8);
 
         if settings_open {
@@ -375,7 +387,7 @@ pub fn run(app: AndroidApp) {
                 let flip_angle = if sim_flip > 0.0 { (1.0 - sim_flip) * std::f32::consts::TAU } else { 0.0 };
                 draw_preview(&mut fb, win_w, win_h, roll, pitch, yaw, throttle, &pad, heading, sim_alt, flip_angle, sim_spin, sim_killed);
             } else {
-                draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless);
+                draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless, bindings.speed);
             }
             if let Some(nw) = &window {
                 blit(nw, &fb, win_w, win_h);
@@ -610,8 +622,8 @@ fn settings_hit(px: usize, py: usize, w: usize, h: usize) -> Option<SettingsHit>
             return Some(SettingsHit::Row(*a));
         }
     }
-    // Throttle-source row (index 8).
-    let ry = settings_row_y(8, h);
+    // Throttle-source row (after the action rows).
+    let ry = settings_row_y(settings::ACTIONS.len(), h);
     if px > w / 12 && px < w - w / 12 && py >= ry && py < ry + rh {
         return Some(SettingsHit::ThrottleToggle);
     }
@@ -635,7 +647,7 @@ fn draw_settings(fb: &mut [u32], w: usize, h: usize, b: &settings::Bindings, lis
         c.glow_text(w - w / 12 - val.len() * g, ry, &val, col, s);
     }
     // Throttle-source toggle row.
-    let ry = settings_row_y(8, h) + (rh - g) / 2;
+    let ry = settings_row_y(settings::ACTIONS.len(), h) + (rh - g) / 2;
     c.glow_text(w / 12, ry, "THROTTLE", hud::CYAN, s);
     let tval = if b.throttle_triggers { "TRIGGERS" } else { "L-STICK Y" };
     c.glow_text(w - w / 12 - tval.len() * g, ry, tval, hud::AMBER, s);
@@ -695,6 +707,7 @@ fn handle_input(event: &InputEvent, pad: &mut Pad, b: &settings::Bindings) -> In
             if kc == b.get(Calibrate) { pad.calibrate = down; }
             if kc == b.get(Emergency) { pad.emergency = down; }
             if kc == b.get(Emergency) && edge { pad.estop = true; }
+            if kc == b.get(Speed) && edge { pad.speed_cycle = true; }
             if kc == 104 { pad.l2 = down; } // ButtonL2 (digital trigger)
             if kc == 105 { pad.r2 = down; } // ButtonR2
             InputStatus::Handled
@@ -751,6 +764,7 @@ fn draw_hud(
     trim_roll: i8,
     trim_pitch: i8,
     headless: bool,
+    speed: u8,
 ) {
     let mut c = hud::Canvas { buf: fb, w, h };
     let s = (w / 360).max(2); // font scale: crisp at native res
@@ -787,6 +801,7 @@ fn draw_hud(
     // trim + headless row
     let row2 = y0 + 2 * s + 2 * g;
     c.glow_text(tx, row2, &format!("TRM R{trim_roll:+03} P{trim_pitch:+03}"), hud::CYAN, s);
+    c.glow_text(tx + 14 * g, row2, &format!("SPD {}", settings::speed_name(speed)), hud::CYAN, s);
     if headless {
         c.glow_text(x1 - 9 * g, row2, "HEADLESS", hud::MAGENTA, s);
     }
