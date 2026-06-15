@@ -918,10 +918,16 @@ fn draw_preview(
     c.hline(w / 8, ground as usize, w * 3 / 4, 0x0020_3020);
 
     let (hcx, hcy) = project(0.0, 0.0);
+
+    // Arms + rotors. Front rotors (toward the nose, +Y) are cyan; rear rotors are
+    // green — the colour split alone tells you which way the drone faces, the same
+    // trick real quads use with coloured props.
     for k in 0..4 {
         let a = FRAC_PI_4 + k as f32 * FRAC_PI_2;
         let (rx, ry) = project(a.cos() * arm, a.sin() * arm);
-        c.line(hcx, hcy, rx, ry, hud::CYAN);
+        let front = a.sin() > 0.0;
+        let (bright, dim) = if front { (hud::CYAN, 0x0020_6070) } else { (hud::GREEN, 0x0026_8A1F) };
+        c.line(hcx, hcy, rx, ry, dim);
         let r = rotor as f32;
         if motors_on {
             // Faint disc + three radial blades. Radial spokes (120° apart, not full
@@ -932,22 +938,39 @@ fn draw_preview(
                 let a0 = seg as f32 * (TAU / 16.0);
                 let a1 = a0 + TAU / 16.0;
                 c.line(rx + (r * a0.cos()) as i32, ry + (r * a0.sin()) as i32,
-                       rx + (r * a1.cos()) as i32, ry + (r * a1.sin()) as i32, 0x0020_5030);
+                       rx + (r * a1.cos()) as i32, ry + (r * a1.sin()) as i32, dim);
             }
             for b in 0..3 {
                 let a = spin + b as f32 * (TAU / 3.0);
-                let col = if b == 0 { hud::GREEN } else { 0x0026_8A1F };
+                let col = if b == 0 { bright } else { dim };
                 c.line(rx, ry, rx + (r * a.cos()) as i32, ry + (r * a.sin()) as i32, col);
             }
         } else {
             // Stopped: a single two-blade prop at rest.
             let (dx, dy) = ((r * FRAC_PI_4.cos()) as i32, (r * FRAC_PI_4.sin()) as i32);
-            c.line(rx - dx, ry - dy, rx + dx, ry + dy, hud::GREEN);
-            c.line(rx - dx, ry + dy, rx + dx, ry - dy, 0x0020_5030);
+            c.line(rx - dx, ry - dy, rx + dx, ry + dy, bright);
+            c.line(rx - dx, ry + dy, rx + dx, ry - dy, dim);
         }
     }
-    let (fx, fy) = project(0.0, arm * 1.4); // forward indicator
-    c.line(hcx, hcy, fx, fy, hud::MAGENTA);
+
+    // Fuselage: a pointed amber body whose nose marks the front (no marker line needed).
+    let bp = [
+        project(0.0, arm * 0.50),          // nose
+        project(arm * 0.24, arm * 0.14),   // front-right shoulder
+        project(arm * 0.20, -arm * 0.34),  // rear-right
+        project(-arm * 0.20, -arm * 0.34), // rear-left
+        project(-arm * 0.24, arm * 0.14),  // front-left shoulder
+    ];
+    for i in 0..bp.len() {
+        let (x0, y0) = bp[i];
+        let (x1, y1) = bp[(i + 1) % bp.len()];
+        c.line(x0, y0, x1, y1, hud::AMBER);
+    }
+    // nose "camera" dot
+    let (nx, ny) = bp[0];
+    let nd = s as i32;
+    c.fill((nx - nd).max(0) as usize, (ny - nd).max(0) as usize, 2 * s, 2 * s, hud::AMBER);
+
     let hub = 2 * s as i32;
     c.fill((hcx - hub).max(0) as usize, (hcy - hub).max(0) as usize, 4 * s, 4 * s, hud::CYAN);
 
