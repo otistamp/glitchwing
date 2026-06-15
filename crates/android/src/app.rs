@@ -925,10 +925,10 @@ fn draw_preview(
     // by the body — no lines are drawn inside the fuselage.
     let cw = arm * 0.24; // corner half-width (= corner depth, keeps it on the diagonal)
     let bp = [
-        project(0.0, arm * 0.62), // 0 nose
+        project(0.0, arm * 0.80), // 0 nose
         project(cw, cw),          // 1 front-right
         project(cw, -cw),         // 2 rear-right
-        project(0.0, -arm * 0.50), // 3 tail
+        project(0.0, -arm * 0.36), // 3 tail
         project(-cw, -cw),        // 4 rear-left
         project(-cw, cw),         // 5 front-left
     ];
