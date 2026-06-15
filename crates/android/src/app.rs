@@ -86,6 +86,8 @@ pub fn run(app: AndroidApp) {
     let mut bindings = cfg_path.as_deref().map(settings::load).unwrap_or_default();
     let mut settings_open = false;
     let mut listening: Option<settings::Action> = None;
+    let mut preview_open = false;
+    let mut heading = 0.0f32; // virtual-drone yaw (sim)
 
     while !quit {
         let mut got_window = false;
@@ -237,27 +239,48 @@ pub fn run(app: AndroidApp) {
             if headless { flags |= FLAG_HEADLESS; }
             if pad.emergency { flags |= FLAG_EMERGENCY; armed = false; }
 
-            if let Some(l) = &link {
-                if pad.arm_toggle {
-                    armed = !armed;
-                    if armed { l.control.arm(); prev_throttle = CENTER; } else { l.control.disarm(); }
+            if preview_open {
+                // Virtual-drone sim: never send control; integrate yaw into heading.
+                armed = false;
+                if let Some(l) = &link {
+                    l.control.disarm();
                 }
-                if pad.emergency { l.control.arm(); }
-                l.control.set(ControlState { roll, pitch, throttle, yaw, flags });
-                if !armed && !pad.emergency { l.control.disarm(); }
-            }
-            pad.arm_toggle = false;
+                heading += (yaw as f32 - 128.0) / 128.0 * 0.10;
+                if let Some((tx_, ty_)) = pad.tap.take() {
+                    let (px, py) = (tx_ as usize, ty_ as usize);
+                    let (x, y, bw, bh) = exit_btn(win_w, win_h);
+                    if px >= x && px < x + bw && py >= y && py < y + bh {
+                        preview_open = false;
+                    }
+                }
+                pad.arm_toggle = false;
+                pad.headless_toggle = false;
+                pad.trim_reset = false;
+            } else {
+                if let Some(l) = &link {
+                    if pad.arm_toggle {
+                        armed = !armed;
+                        if armed { l.control.arm(); prev_throttle = CENTER; } else { l.control.disarm(); }
+                    }
+                    if pad.emergency { l.control.arm(); }
+                    l.control.set(ControlState { roll, pitch, throttle, yaw, flags });
+                    if !armed && !pad.emergency { l.control.disarm(); }
+                }
+                pad.arm_toggle = false;
 
-            // Taps: open settings (KEY MAP, disarmed only) or reconnect.
-            if let Some((tx_, ty_)) = pad.tap.take() {
-                let (px, py) = (tx_ as usize, ty_ as usize);
-                let inside = |(x, y, bw, bh): (usize, usize, usize, usize)| px >= x && px < x + bw && py >= y && py < y + bh;
-                if !armed && inside(menu_btn(win_w, win_h)) {
-                    settings_open = true;
-                    listening = None;
-                } else if !connected && inside(reconnect_btn(win_w, win_h)) {
-                    wifi_requested = false;
-                    last_attempt = None;
+                // Taps: KEY MAP / SIM (disarmed only) or reconnect.
+                if let Some((tx_, ty_)) = pad.tap.take() {
+                    let (px, py) = (tx_ as usize, ty_ as usize);
+                    let inside = |(x, y, bw, bh): (usize, usize, usize, usize)| px >= x && px < x + bw && py >= y && py < y + bh;
+                    if !armed && inside(menu_btn(win_w, win_h)) {
+                        settings_open = true;
+                        listening = None;
+                    } else if !armed && inside(sim_btn(win_w, win_h)) {
+                        preview_open = true;
+                    } else if !connected && inside(reconnect_btn(win_w, win_h)) {
+                        wifi_requested = false;
+                        last_attempt = None;
+                    }
                 }
             }
         }
@@ -276,6 +299,8 @@ pub fn run(app: AndroidApp) {
             scale_video(&mut fb, win_w, win_h, &vid);
             if settings_open {
                 draw_settings(&mut fb, win_w, win_h, &bindings, listening);
+            } else if preview_open {
+                draw_preview(&mut fb, win_w, win_h, roll, pitch, yaw, throttle, &pad, heading, frame);
             } else {
                 draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless);
             }
@@ -597,6 +622,17 @@ fn menu_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
     (w / 2 - bw / 2, panel_bottom + h / 60, bw, bh)
 }
 
+/// "SIM" button rect — opens the virtual-drone preview (disarmed). Below KEY MAP.
+fn sim_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
+    let (mx, my, bw, bh) = menu_btn(w, h);
+    (mx, my + bh + h / 60, bw, bh)
+}
+
+/// "EXIT" button rect for the preview screen (bottom-center).
+fn exit_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
+    (w / 2 - w / 8, h - h / 8, w / 4, h / 18)
+}
+
 /// On-screen reconnect-button rect (x, y, w, h), in native pixels. Shared by the
 /// HUD (to draw) and the loop (to hit-test the tap).
 fn reconnect_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
@@ -661,15 +697,16 @@ fn draw_hud(
         c.glow_text(x1 - 9 * g, row2, "HEADLESS", hud::MAGENTA, s);
     }
 
-    // KEY MAP button (disarmed only) — opens the settings overlay.
+    // KEY MAP + SIM buttons (disarmed only).
     if !armed {
-        let (bx, by, bw, bh) = menu_btn(w, h);
-        c.hline(bx, by, bw, hud::CYAN);
-        c.hline(bx, by + bh, bw, hud::CYAN);
-        c.vline(bx, by, bh, hud::CYAN);
-        c.vline(bx + bw, by, bh, hud::CYAN);
-        let label = "KEY MAP";
-        c.glow_text(bx + bw.saturating_sub(label.len() * g) / 2, by + bh.saturating_sub(g) / 2, label, hud::CYAN, s);
+        for (rect, label) in [(menu_btn(w, h), "KEY MAP"), (sim_btn(w, h), "SIM")] {
+            let (bx, by, bw, bh) = rect;
+            c.hline(bx, by, bw, hud::CYAN);
+            c.hline(bx, by + bh, bw, hud::CYAN);
+            c.vline(bx, by, bh, hud::CYAN);
+            c.vline(bx + bw, by, bh, hud::CYAN);
+            c.glow_text(bx + bw.saturating_sub(label.len() * g) / 2, by + bh.saturating_sub(g) / 2, label, hud::CYAN, s);
+        }
     }
 
     // stick boxes near the bottom safe corners
@@ -702,6 +739,77 @@ fn draw_hud(
         c.panel(bx.saturating_sub(6), by.saturating_sub(6), tw + 12, 8 * bscale + 12, 210);
         c.glow_text(bx, by, msg, hud::RED, bscale);
     }
+}
+
+/// Virtual-drone preview: a neon wireframe quad you "fly" with the mapped controls
+/// (disarmed; nothing sent to the real drone). Translates with roll/pitch, spins
+/// with yaw (heading), rotors grow with throttle; mapped action buttons light up.
+#[allow(clippy::too_many_arguments)]
+fn draw_preview(
+    fb: &mut [u32],
+    w: usize,
+    h: usize,
+    roll: u8,
+    pitch: u8,
+    yaw: u8,
+    throttle: u8,
+    pad: &Pad,
+    heading: f32,
+    frame: u64,
+) {
+    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
+    let mut c = hud::Canvas { buf: fb, w, h };
+    c.panel(0, 0, w, h, 210);
+    let s = (w / 360).max(2);
+    let g = 8 * s;
+    c.glow_text(w / 12, h / 12, "VIRTUAL DRONE - SIM", hud::MAGENTA, s);
+
+    // Body translates with roll/pitch; rotors grow with throttle.
+    let cx = w as i32 / 2 + (roll as i32 - 128) * w as i32 / 500;
+    let cy = h as i32 / 2 - (pitch as i32 - 128) * h as i32 / 1000;
+    let arm = w as f32 / 6.0;
+    let thr = throttle as f32 / 255.0;
+    let rotor = (3.0 + thr * 9.0) * s as f32;
+
+    for k in 0..4 {
+        let a = heading + FRAC_PI_4 + k as f32 * FRAC_PI_2;
+        let rx = cx + (a.cos() * arm) as i32;
+        let ry = cy + (a.sin() * arm) as i32;
+        c.line(cx, cy, rx, ry, hud::CYAN); // arm
+        let r = rotor as i32; // rotor diamond
+        c.line(rx - r, ry, rx, ry - r, hud::GREEN);
+        c.line(rx, ry - r, rx + r, ry, hud::GREEN);
+        c.line(rx + r, ry, rx, ry + r, hud::GREEN);
+        c.line(rx, ry + r, rx - r, ry, hud::GREEN);
+    }
+    // front indicator (heading) + hub
+    let fx = cx + (heading.cos() * arm * 1.6) as i32;
+    let fy = cy + (heading.sin() * arm * 1.6) as i32;
+    c.line(cx, cy, fx, fy, hud::MAGENTA);
+    let hub = 2 * s as i32;
+    c.fill((cx - hub).max(0) as usize, (cy - hub).max(0) as usize, 4 * s, 4 * s, hud::CYAN);
+
+    // Axis readout + mapped action buttons lighting up when pressed.
+    c.glow_text(w / 12, h - h / 8, &format!("THR{throttle:3} YAW{yaw:3} ROL{roll:3} PIT{pitch:3}"), hud::CYAN, s);
+    let mut bx = w / 12;
+    for (lbl, on, col) in [
+        ("TAKEOFF", pad.takeoff, hud::GREEN),
+        ("LAND", pad.land, hud::AMBER),
+        ("FLIP", pad.flip, hud::MAGENTA),
+        ("CALIB", pad.calibrate, hud::CYAN),
+    ] {
+        c.glow_text(bx, h - h / 6, lbl, if on { col } else { 0x0033_3333 }, s);
+        bx += (lbl.len() + 1) * g;
+    }
+    let _ = frame;
+
+    // EXIT button
+    let (ex, ey, ew, eh) = exit_btn(w, h);
+    c.hline(ex, ey, ew, hud::RED);
+    c.hline(ex, ey + eh, ew, hud::RED);
+    c.vline(ex, ey, eh, hud::RED);
+    c.vline(ex + ew, ey, eh, hud::RED);
+    c.glow_text(ex + ew.saturating_sub(4 * g) / 2, ey + eh.saturating_sub(g) / 2, "EXIT", hud::RED, s);
 }
 
 fn decode_into(jpeg: &[u8], vid: &mut [u32]) -> bool {
