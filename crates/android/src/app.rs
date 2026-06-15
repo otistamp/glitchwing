@@ -893,8 +893,8 @@ fn draw_preview(
     let ground = h as f32 * 0.62;
     let cxf = w as f32 / 2.0;
     let drone_y = ground - alt * h as f32 * 0.30;
-    let arm = w as f32 / 6.0;
-    let rotor = ((3.0 + (throttle as f32 / 255.0) * 9.0) * s as f32) as i32;
+    let arm = w as f32 / 4.0;
+    let rotor = ((5.0 + (throttle as f32 / 255.0) * 12.0) * s as f32) as i32;
     let (sr, cr) = ((roll as f32 - 128.0) / 128.0 * 0.6 + flip_angle).sin_cos();
     // Pitch tilt inverted in the sim view only (flight control unchanged).
     let (sp, cp) = (-(pitch as f32 - 128.0) / 128.0 * 0.6).sin_cos();
