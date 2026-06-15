@@ -8,7 +8,7 @@
 use std::mem::MaybeUninit;
 use std::time::{Duration, Instant};
 
-use android_activity::input::{Axis, InputEvent, KeyAction, Keycode};
+use android_activity::input::{Axis, InputEvent, KeyAction, Keycode, MotionAction};
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent, WindowManagerFlags};
 use jni::objects::{JObject, JObjectArray, JValue};
 use ndk::{hardware_buffer_format::HardwareBufferFormat, native_window::NativeWindow};
@@ -26,6 +26,7 @@ const EXPO: f32 = 0.4;
 const THROTTLE_RAMP: u8 = 6;
 const DEADZONE: f32 = 0.12;
 const SOURCE_CLASS_JOYSTICK: u32 = 0x0000_0010;
+const SOURCE_CLASS_POINTER: u32 = 0x0000_0002; // touchscreen
 const TRANSPORT_WIFI: i32 = 1;
 /// Drone AP SSID prefix (observed: "WIFI_8K__<mac>"), matched as a prefix pattern.
 const SSID_PREFIX: &str = "WIFI_8K__";
@@ -46,6 +47,7 @@ struct Pad {
     hy: f32, // D-pad hat Y (-1 up / +1 down)
     headless_toggle: bool,
     trim_reset: bool,
+    tap: Option<(f32, f32)>, // last touch-down screen coords
 }
 
 pub fn run(app: AndroidApp) {
@@ -219,6 +221,16 @@ pub fn run(app: AndroidApp) {
             }
             scale_video(&mut fb, win_w, win_h, &vid);
             let connected = last_frame.map_or(false, |t| t.elapsed() < Duration::from_secs(2));
+            // Touch the reconnect button (shown only when disconnected) -> re-fire auto-connect.
+            if let Some((tx_, ty_)) = pad.tap.take() {
+                let (bx, by, bw, bh) = reconnect_btn(win_w, win_h);
+                let (px, py) = (tx_ as usize, ty_ as usize);
+                if !connected && px >= bx && px < bx + bw && py >= by && py < by + bh {
+                    wifi_requested = false;
+                    last_attempt = None;
+                    log::info!("reconnect button tapped");
+                }
+            }
             draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless);
             if let Some(nw) = &window {
                 blit(nw, &fb, win_w, win_h);
@@ -416,6 +428,15 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
                 pad.hy = p.axis_value(Axis::HatY);
                 return InputStatus::Handled;
             }
+            // Touch: record tap-down screen coords for HUD button hit-testing.
+            if u32::from(m.source()) & SOURCE_CLASS_POINTER != 0
+                && matches!(m.action(), MotionAction::Down | MotionAction::PointerDown)
+                && m.pointer_count() > 0
+            {
+                let p = m.pointer_at_index(0);
+                pad.tap = Some((p.raw_x(), p.raw_y()));
+                return InputStatus::Handled;
+            }
             InputStatus::Unhandled
         }
         InputEvent::KeyEvent(k) => {
@@ -448,6 +469,14 @@ fn handle_input(event: &InputEvent, pad: &mut Pad) -> InputStatus {
         }
         _ => InputStatus::Unhandled,
     }
+}
+
+/// On-screen reconnect-button rect (x, y, w, h), in native pixels. Shared by the
+/// HUD (to draw) and the loop (to hit-test the tap).
+fn reconnect_btn(w: usize, h: usize) -> (usize, usize, usize, usize) {
+    let bw = w / 3;
+    let bh = h / 22;
+    (w / 2 - bw / 2, h - h / 18 - bh - h / 30, bw, bh)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -512,6 +541,19 @@ fn draw_hud(
     c.glow_text(x0 + 2 * s, y1 - g + s, "YAW/THR", hud::MAGENTA, s.max(2));
     c.stick_box(x1 - bs - 2 * s, y1 - bs - g, bs, roll, pitch, hud::CYAN);
     c.glow_text(x1 - 8 * g, y1 - g + s, "ROL/PIT", hud::CYAN, s.max(2));
+
+    // Tappable reconnect button (only while disconnected).
+    if !connected {
+        let (bx, by, bw, bh) = reconnect_btn(w, h);
+        c.panel(bx, by, bw, bh, 220);
+        c.hline(bx, by, bw, hud::CYAN);
+        c.hline(bx, by + bh, bw, hud::CYAN);
+        c.vline(bx, by, bh, hud::CYAN);
+        c.vline(bx + bw, by, bh, hud::CYAN);
+        let label = "TAP: RECONNECT";
+        let lw = label.len() * 8 * s;
+        c.glow_text(bx + bw.saturating_sub(lw) / 2, by + bh.saturating_sub(8 * s) / 2, label, hud::CYAN, s);
+    }
 
     // Loud, blinking "LINK LOST" banner when no video is arriving — fly back!
     if !connected && (frame / 18).is_multiple_of(2) {
