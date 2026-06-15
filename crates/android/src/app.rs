@@ -94,6 +94,7 @@ pub fn run(app: AndroidApp) {
     let mut heading = 0.0f32; // virtual-drone yaw (sim)
     let mut sim_alt = 0.0f32; // sim altitude 0..~1.2
     let mut sim_alt_target: Option<f32> = None; // active takeoff/land glide target
+    let mut sim_spin = 0.0f32; // rotor spin phase (radians)
     let mut sim_flip = 0.0f32; // flip progress 1->0 while animating
     let mut sim_prev_flip = false;
     let mut sim_prev_takeoff = false;
@@ -297,6 +298,11 @@ pub fn run(app: AndroidApp) {
                 if sim_flip > 0.0 {
                     sim_flip = (sim_flip - 0.04).max(0.0);
                 }
+                // Rotors spin while "flying"; spin rate scales with throttle.
+                let sim_motors = sim_alt > 0.02 || pad.takeoff || sim_flip > 0.0;
+                if sim_motors {
+                    sim_spin = (sim_spin + 0.5 + thr_def.max(0.0) * 0.8) % std::f32::consts::TAU;
+                }
                 if let Some((tx_, ty_)) = pad.tap.take() {
                     let (px, py) = (tx_ as usize, ty_ as usize);
                     let (x, y, bw, bh) = exit_btn(win_w, win_h);
@@ -355,7 +361,7 @@ pub fn run(app: AndroidApp) {
                 draw_settings(&mut fb, win_w, win_h, &bindings, listening);
             } else if preview_open {
                 let flip_angle = if sim_flip > 0.0 { (1.0 - sim_flip) * std::f32::consts::TAU } else { 0.0 };
-                draw_preview(&mut fb, win_w, win_h, roll, pitch, yaw, throttle, &pad, heading, sim_alt, flip_angle);
+                draw_preview(&mut fb, win_w, win_h, roll, pitch, yaw, throttle, &pad, heading, sim_alt, flip_angle, sim_spin);
             } else {
                 draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless);
             }
@@ -832,8 +838,9 @@ fn draw_preview(
     heading: f32,
     alt: f32,
     flip_angle: f32,
+    spin: f32,
 ) {
-    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
+    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
     let mut c = hud::Canvas { buf: fb, w, h };
     c.panel(0, 0, w, h, 215);
     let s = (w / 360).max(2);
@@ -881,16 +888,33 @@ fn draw_preview(
     // ground reference line
     c.hline(w / 8, ground as usize, w * 3 / 4, 0x0020_3020);
 
+    // Rotors spin while flying (alt/takeoff/flip), static when shut off.
+    let motors_on = alt > 0.02 || pad.takeoff || flip_angle > 0.05;
     let (hcx, hcy) = project(0.0, 0.0);
     for k in 0..4 {
         let a = FRAC_PI_4 + k as f32 * FRAC_PI_2;
         let (rx, ry) = project(a.cos() * arm, a.sin() * arm);
         c.line(hcx, hcy, rx, ry, hud::CYAN);
-        let r = rotor;
-        c.line(rx - r, ry, rx, ry - r, hud::GREEN);
-        c.line(rx, ry - r, rx + r, ry, hud::GREEN);
-        c.line(rx + r, ry, rx, ry + r, hud::GREEN);
-        c.line(rx, ry + r, rx - r, ry, hud::GREEN);
+        let r = rotor as f32;
+        if motors_on {
+            // Faint disc + three blades swept to the current phase → reads as spin.
+            for seg in 0..16 {
+                let a0 = spin + seg as f32 * (TAU / 16.0);
+                let a1 = a0 + TAU / 16.0;
+                c.line(rx + (r * a0.cos()) as i32, ry + (r * a0.sin()) as i32,
+                       rx + (r * a1.cos()) as i32, ry + (r * a1.sin()) as i32, 0x0020_5030);
+            }
+            for b in 0..3 {
+                let a = spin + b as f32 * (TAU / 3.0);
+                let (dx, dy) = ((r * a.cos()) as i32, (r * a.sin()) as i32);
+                c.line(rx - dx, ry - dy, rx + dx, ry + dy, hud::GREEN);
+            }
+        } else {
+            // Stopped: a single two-blade prop at rest.
+            let (dx, dy) = ((r * FRAC_PI_4.cos()) as i32, (r * FRAC_PI_4.sin()) as i32);
+            c.line(rx - dx, ry - dy, rx + dx, ry + dy, hud::GREEN);
+            c.line(rx - dx, ry + dy, rx + dx, ry - dy, 0x0020_5030);
+        }
     }
     let (fx, fy) = project(0.0, arm * 1.4); // forward indicator
     c.line(hcx, hcy, fx, fy, hud::MAGENTA);
