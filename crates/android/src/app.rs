@@ -41,6 +41,7 @@ struct Pad {
     ry: f32,
     arm_toggle: bool,
     emergency: bool,
+    estop: bool, // emergency one-shot edge (for the sim kill)
     takeoff: bool,
     land: bool,
     flip: bool,
@@ -95,6 +96,7 @@ pub fn run(app: AndroidApp) {
     let mut sim_alt = 0.0f32; // sim altitude 0..~1.2
     let mut sim_alt_target: Option<f32> = None; // active takeoff/land glide target
     let mut sim_spin = 0.0f32; // rotor spin phase (radians)
+    let mut sim_killed = false; // emergency motor cut active
     let mut sim_flip = 0.0f32; // flip progress 1->0 while animating
     let mut sim_prev_flip = false;
     let mut sim_prev_takeoff = false;
@@ -232,6 +234,7 @@ pub fn run(app: AndroidApp) {
                 }
             }
             pad.arm_toggle = false; // discard control one-shots while in settings
+            pad.estop = false;
         } else {
             // D-pad trim (edge-triggered ±1 per press), headless toggle, reset trim.
             const TRIM_LIMIT: i8 = 40;
@@ -270,26 +273,40 @@ pub fn run(app: AndroidApp) {
                 }
                 // Yaw inverted in the sim view only (flight control unchanged).
                 heading -= (yaw as f32 - 128.0) / 128.0 * 0.10;
-                // Takeoff (edge): if grounded, glide up to 25% altitude. Land (edge):
-                // if airborne, glide down to the ground. Like the real commands.
-                if pad.takeoff && !sim_prev_takeoff && sim_alt <= 0.01 { sim_alt_target = Some(0.25); }
+                // Emergency button: cut the motors. The drone drops fast and stays
+                // grounded until the next takeoff re-arms it.
+                if pad.estop {
+                    sim_killed = true;
+                    sim_alt_target = None;
+                }
+                // Takeoff (edge): if grounded, glide up to 25% altitude (clears a kill).
+                // Land (edge): if airborne, glide down to the ground.
+                if pad.takeoff && !sim_prev_takeoff && sim_alt <= 0.01 {
+                    sim_alt_target = Some(0.25);
+                    sim_killed = false;
+                }
                 sim_prev_takeoff = pad.takeoff;
                 if pad.land && !sim_prev_land && sim_alt > 0.01 { sim_alt_target = Some(0.0); }
                 sim_prev_land = pad.land;
-                // Throttle fine-tunes altitude; using it cancels any glide.
                 let thr_def = (throttle as f32 - 128.0) / 128.0;
-                if thr_def.abs() > 0.1 { sim_alt_target = None; }
-                // Ease toward an active takeoff/land target.
-                if let Some(t) = sim_alt_target {
-                    let step = 0.012;
-                    if (sim_alt - t).abs() <= step {
-                        sim_alt = t;
-                        sim_alt_target = None;
-                    } else {
-                        sim_alt += step.copysign(t - sim_alt);
+                if sim_killed {
+                    // Motors cut: free-fall to the ground, ignore sticks.
+                    sim_alt = (sim_alt - 0.05).max(0.0);
+                } else {
+                    // Throttle fine-tunes altitude; using it cancels any glide.
+                    if thr_def.abs() > 0.1 { sim_alt_target = None; }
+                    // Ease toward an active takeoff/land target.
+                    if let Some(t) = sim_alt_target {
+                        let step = 0.012;
+                        if (sim_alt - t).abs() <= step {
+                            sim_alt = t;
+                            sim_alt_target = None;
+                        } else {
+                            sim_alt += step.copysign(t - sim_alt);
+                        }
                     }
+                    sim_alt = (sim_alt + thr_def * 0.02).clamp(0.0, 1.2);
                 }
-                sim_alt = (sim_alt + thr_def * 0.02).clamp(0.0, 1.2);
                 // Flip: a 360° barrel roll on the press edge.
                 if pad.flip && !sim_prev_flip {
                     sim_flip = 1.0;
@@ -299,7 +316,7 @@ pub fn run(app: AndroidApp) {
                     sim_flip = (sim_flip - 0.04).max(0.0);
                 }
                 // Rotors spin while "flying"; spin rate scales with throttle.
-                let sim_motors = sim_alt > 0.02 || pad.takeoff || sim_flip > 0.0;
+                let sim_motors = !sim_killed && (sim_alt > 0.02 || pad.takeoff || sim_flip > 0.0);
                 if sim_motors {
                     sim_spin = (sim_spin + 0.5 + thr_def.max(0.0) * 0.8) % std::f32::consts::TAU;
                 }
@@ -313,6 +330,7 @@ pub fn run(app: AndroidApp) {
                 pad.arm_toggle = false;
                 pad.headless_toggle = false;
                 pad.trim_reset = false;
+                pad.estop = false;
             } else {
                 if let Some(l) = &link {
                     if pad.arm_toggle {
@@ -324,6 +342,7 @@ pub fn run(app: AndroidApp) {
                     if !armed && !pad.emergency { l.control.disarm(); }
                 }
                 pad.arm_toggle = false;
+                pad.estop = false;
 
                 // Taps: KEY MAP / SIM (disarmed only) or reconnect.
                 if let Some((tx_, ty_)) = pad.tap.take() {
@@ -361,7 +380,7 @@ pub fn run(app: AndroidApp) {
                 draw_settings(&mut fb, win_w, win_h, &bindings, listening);
             } else if preview_open {
                 let flip_angle = if sim_flip > 0.0 { (1.0 - sim_flip) * std::f32::consts::TAU } else { 0.0 };
-                draw_preview(&mut fb, win_w, win_h, roll, pitch, yaw, throttle, &pad, heading, sim_alt, flip_angle, sim_spin);
+                draw_preview(&mut fb, win_w, win_h, roll, pitch, yaw, throttle, &pad, heading, sim_alt, flip_angle, sim_spin, sim_killed);
             } else {
                 draw_hud(&mut fb, win_w, win_h, armed, connected, shown_fps, throttle, yaw, roll, pitch, frame, trim_roll, trim_pitch, headless);
             }
@@ -682,6 +701,7 @@ fn handle_input(event: &InputEvent, pad: &mut Pad, b: &settings::Bindings) -> In
             if kc == b.get(Flip) { pad.flip = down; }
             if kc == b.get(Calibrate) { pad.calibrate = down; }
             if kc == b.get(Emergency) { pad.emergency = down; }
+            if kc == b.get(Emergency) && edge { pad.estop = true; }
             if kc == 104 { pad.l2 = down; } // ButtonL2 (digital trigger)
             if kc == 105 { pad.r2 = down; } // ButtonR2
             InputStatus::Handled
@@ -839,6 +859,7 @@ fn draw_preview(
     alt: f32,
     flip_angle: f32,
     spin: f32,
+    killed: bool,
 ) {
     use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
     let mut c = hud::Canvas { buf: fb, w, h };
@@ -855,6 +876,7 @@ fn draw_preview(
         ("LAND", pad.land, hud::AMBER),
         ("FLIP", pad.flip || flip_angle > 0.05, hud::MAGENTA),
         ("CALIB", pad.calibrate, hud::CYAN),
+        ("EMERGENCY", killed, hud::RED),
     ] {
         c.glow_text(bx, h / 12 + 2 * g + s * 4, lbl, if on { col } else { 0x0033_3333 }, s);
         bx += (lbl.len() + 1) * g;
@@ -888,8 +910,8 @@ fn draw_preview(
     // ground reference line
     c.hline(w / 8, ground as usize, w * 3 / 4, 0x0020_3020);
 
-    // Rotors spin while flying (alt/takeoff/flip), static when shut off.
-    let motors_on = alt > 0.02 || pad.takeoff || flip_angle > 0.05;
+    // Rotors spin while flying (alt/takeoff/flip), static when shut off or killed.
+    let motors_on = !killed && (alt > 0.02 || pad.takeoff || flip_angle > 0.05);
     let (hcx, hcy) = project(0.0, 0.0);
     for k in 0..4 {
         let a = FRAC_PI_4 + k as f32 * FRAC_PI_2;
