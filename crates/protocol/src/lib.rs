@@ -1,7 +1,6 @@
-//! DRCX5 / the stock app wire protocol.
+//! Toy-drone wire protocol.
 //!
-//! Control: 8-byte UDP packets to `192.168.4.153:8090`. See
-//! `docs/superpowers/specs/2026-06-13-drcx5-protocol-spec.md`.
+//! Control: 8-byte UDP packets to `192.168.4.153:8090`.
 
 pub mod avi;
 
@@ -93,10 +92,10 @@ pub fn idle_keepalive() -> [u8; 8] {
 
 // ---------------------------------------------------------------------------
 // Video: MJPEG-over-UDP frame reassembly (drone -> phone, port 8080).
-// Each datagram: [frameId][isFinal][chunkCount][0x00] "TZH" 0x01 + JPEG slice.
+// Each datagram: [frameId][isFinal][chunkCount][0x00] + 4-byte vendor magic + JPEG slice.
 // ---------------------------------------------------------------------------
 
-/// Vendor magic in bytes 4–7 of every video chunk header: `"TZH" 0x01`.
+/// Vendor magic in bytes 4–7 of every video chunk header.
 pub const VIDEO_MAGIC: [u8; 4] = [0x54, 0x5A, 0x48, 0x01];
 
 /// Parsed video chunk header.

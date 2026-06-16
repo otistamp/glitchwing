@@ -73,5 +73,4 @@ WiFi range.
 
 ## License
 
-Personal project. The built stock app and packet captures are not
-included in this repository.
+Personal project.
