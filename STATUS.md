@@ -1,15 +1,12 @@
 # Glitchwing — status
 
-Pure-Rust control + video for the Vivitar Sky Raptor **DRCX5** toy drone
-(stock app: the stock app, `the stock app`).
+Pure-Rust control + video for the Vivitar Sky Raptor **DRCX5** toy drone.
 
 ## Done
 
-- **Phase 0 — Protocol discovery** ✅
-  Implemented from the the stock app APK and confirmed against a live packet
-  capture. Control: UDP `192.168.4.153:8090`, 8-byte `66…99` (throttle centered
-  at `0x80`, altitude-hold). Video: UDP `:8080`, MJPEG (`TZH`-headered chunks),
-  240×320. See `docs/superpowers/specs/2026-06-13-drcx5-protocol-spec.md`.
+- **Phase 0 — Protocol** ✅
+  Control: UDP `192.168.4.153:8090`, 8-byte `66…99` (throttle centered at `0x80`,
+  altitude-hold). Video: UDP `:8080`, MJPEG (vendor-headered chunks), 240×320.
 
 - **Phase 1 — Desktop app** ✅ (validated props-off against the real drone)
   - `crates/protocol` — control encoding + checksum + MJPEG reassembly + axis mapping (22 tests)
@@ -26,8 +23,7 @@ Pure-Rust control + video for the Vivitar Sky Raptor **DRCX5** toy drone
     gamepad flight control + same failsafe/HUD as desktop.
   - **WiFi bind:** JNI `ConnectivityManager.bindProcessToNetwork` so video works
     with cellular on (Android otherwise routes app traffic to cellular).
-  - Gamepad map documented in `docs/CONTROLLER.md`; key events consumed so a
-    BACK-mapped button can't close the app.
+  - Key events consumed so a BACK-mapped button can't close the app.
   - Toolchain: `cargo-apk` + NDK r27, 16 KB-aligned. Build: `scripts/build-android.sh`.
 
 ## Status: maiden flight flown ✅
@@ -91,10 +87,8 @@ Android app flew the drone with live video + gamepad control. Confirmed:
   a screenshot/compositor effect, not on-device.
 
 Build/deploy: `scripts/build-android.sh build` then
-`adb install -r target/debug/apk/skyraptor-android.apk`. Logs: `adb logcat -s skyraptor:I`.
+`adb install -r target/debug/apk/glitchwing-android.apk`. Logs: `adb logcat -s glitchwing:I`.
 
 ## Tooling notes
 
-- Analyze a capture: `python3 scripts/analyze_pcap.py <pcap>`
-- Validate reassembly on a capture: `cargo run -p protocol --example replay_pcap -- <pcap> <out>`
 - Run the viewer (props OFF first): `cargo run -p viewer --release`

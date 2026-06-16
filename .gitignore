@@ -1,10 +1,17 @@
-# Derived artifacts — large/derived, not source
+# Large / derived / non-source artifacts
 *.apk
 *.xapk
 *.apkm
 /decompiled/
+/decompiled_jadx.log
 /captures/*.pcap
 /captures/*.pcapng
+
+# Local notes + captured sample media (not part of the published repo)
+/docs/
+/live_frames/
+/recordings/
+/snapshots/
 
 # Rust
 /target/
