@@ -73,4 +73,4 @@ WiFi range.
 
 ## License
 
-Personal project.
+[MIT](LICENSE) © 2026 Otis Stamp
